@@ -1,6 +1,6 @@
 # Deploy the demo
 
-The stack stays the same: Expo/React Native, NestJS, Socket.IO, Prisma and PostgreSQL. Render hosts one gateway, Neon supplies PostgreSQL, and EAS builds the Android APK. Provider accounts are required; the map uses MapLibre and OpenFreeMap without an API key. These instructions do not imply that a service or APK has already been published.
+The stack stays the same: Expo/React Native, NestJS, Socket.IO, Prisma and PostgreSQL. Render hosts one gateway, Neon supplies PostgreSQL, and EAS builds the Android APK. Provider accounts are required; the map uses MapLibre and OpenFreeMap without an API key. The demo API is deployed at [nexusfleet-api.onrender.com](https://nexusfleet-api.onrender.com/health), backed by Neon Free in Singapore. Its HTTPS and Socket.IO paths were checked with synthetic points on 4 October 2026.
 
 ## 1. Create the Neon database
 
@@ -58,6 +58,8 @@ Set `EXPO_PUBLIC_API_URL` in the EAS **preview** environment to the actual Rende
 MapLibre Native uses the OpenFreeMap Liberty style by default. No map key, Google account or Google billing setup is needed. The Expo plugin installs the native renderer; it needs an APK or development build. Attribution remains enabled. Optionally set `EXPO_PUBLIC_MAP_STYLE_URL` to a compatible hosted style. Public tiles require connectivity; the SQLite telemetry queue still records fixes when the basemap cannot load. The app does not currently download offline basemap regions. See [OpenFreeMap](https://openfreemap.org/) and [MapLibre Expo setup](https://maplibre.org/maplibre-react-native/docs/setup/expo/).
 
 ## 5. Build and share the APK
+
+The first signed preview build is available as the [APK download](https://expo.dev/artifacts/eas/aAnk1gV-ivbnHGLIvLE_Gms9LGlbmuh5Llcywy3_JeM.apk) and on [EAS](https://expo.dev/accounts/rayanakarthikeyan/projects/nexusfleet/builds/7457eb8b-46df-436b-a6b5-ad28b49bc129). It is version 1.0.0 (Android versionCode 2), built from commit `c4fc3a7` on 4 October 2026. Access codes and backend secrets are excluded. Ten CI tests and hosted API/socket checks passed; physical-device validation remains required.
 
 From `mobile`:
 

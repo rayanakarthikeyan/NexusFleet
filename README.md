@@ -27,7 +27,9 @@ flowchart LR
 
 ## Try the demo
 
-1. Start the backend and provision a trip using the [local setup guide](docs/local-setup.md).
+Download the [standalone Android APK](https://expo.dev/artifacts/eas/aAnk1gV-ivbnHGLIvLE_Gms9LGlbmuh5Llcywy3_JeM.apk) (1.0.0, versionCode 2). It uses the hosted Render/Neon API and the free OpenFreeMap basemap; Metro and a map API key are not required. The [release](https://github.com/rayanakarthikeyan/NexusFleet/releases/tag/v1.0.0-demo) includes a SHA-256 checksum.
+
+1. Obtain the operator-issued Driver and Viewer codes, or start your own backend and provision a trip using the [local setup guide](docs/local-setup.md).
 2. Install the APK on two Android devices. Connect one with the driver code and the other with the viewer code.
 3. Start a trip, enable **Simulate Network Drop**, and move with the driver phone. Its queue count grows.
 4. Disable the switch. The queue drains after commit acknowledgements, and the viewer plays the saved route in catch-up mode.
@@ -94,6 +96,6 @@ The deployment target remains **Render Free + Neon Free + EAS Free**. Follow [th
 
 This is a portfolio demo, with operator-issued trip credentials. A production rollout still needs an identity and renewal flow, retention rules, monitoring, and physical-device validation. Run one gateway instance; multiple replicas require a shared Socket.IO adapter and outbox leasing. Android force-stop, revoked permissions or erased app storage can interrupt capture or remove saved data.
 
-The repo does not yet include a published APK or a verified hosted demo URL. Native background tracking, SQLite behavior and marker animation need testing on a physical Android device.
+The demo API is live at [nexusfleet-api.onrender.com](https://nexusfleet-api.onrender.com/health), backed by Neon Free. HTTPS ingestion, WebSocket delivery, duplicate retries and role access were verified against the hosted service. Native background tracking, SQLite behavior and marker animation still need testing on a physical Android device.
 
 Unresolved dependency advisories are tracked in [maintenance notes](docs/maintenance.md).
