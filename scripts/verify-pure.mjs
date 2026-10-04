@@ -9,6 +9,7 @@ const sources = [
   'mobile/services/SerialQueue.ts',
   'mobile/services/interpolation.ts',
   'mobile/services/acknowledgement.ts',
+  'mobile/services/sessionPolicy.ts',
   'mobile/test/reliability.test.ts',
 ];
 for (const path of sources) {

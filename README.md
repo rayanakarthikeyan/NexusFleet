@@ -52,7 +52,7 @@ npm run db:migrate --workspace backend
 npm run dev --workspace backend
 ```
 
-In another terminal, `npm run provision --workspace backend` creates a trip and prints its two access codes. Mobile setup requires a reachable API URL and a restricted Google Maps Android key; see the [full setup](docs/local-setup.md).
+In another terminal, `npm run provision --workspace backend` creates a trip and prints its two access codes. The same APK has separate Driver and Viewer sign-ins, remembered independently. Mobile setup requires a reachable API URL; MapLibre renders OpenFreeMap tiles without an API key. See the [full setup](docs/local-setup.md).
 
 ## What’s in the repo
 

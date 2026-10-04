@@ -148,3 +148,11 @@ export async function getSession(): Promise<Session | null> {
   return raw ? (JSON.parse(raw) as Session) : null;
 }
 export const saveSession = (session: Session) => setSetting('session', JSON.stringify(session));
+
+export async function getViewerSession(): Promise<Session | null> {
+  const raw = await getSetting('viewer-session');
+  return raw ? (JSON.parse(raw) as Session) : null;
+}
+
+export const saveViewerSession = (session: Session) =>
+  setSetting('viewer-session', JSON.stringify(session));

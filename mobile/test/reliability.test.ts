@@ -9,6 +9,33 @@ import {
 } from '../services/interpolation';
 import { acceptedIds } from '../services/acknowledgement';
 import { LocationPayload } from '../types';
+import { credentialKey, verifiedSession, assertDriverReplacement } from '../services/sessionPolicy';
+
+const tripA = '1d00a589-8bf5-44e1-b158-f53fc5b5b063';
+const tripB = 'db7d63f8-df61-431b-9484-a26f49db31f0';
+
+test('driver and viewer credentials remain isolated even on the same trip', () => {
+  const driver = verifiedSession({ tripId: tripA, role: 'driver' }, 'driver');
+  const viewer = verifiedSession({ tripId: tripA, role: 'consumer' }, 'consumer');
+  assert.notEqual(credentialKey(driver), credentialKey(viewer));
+  assert.notEqual(credentialKey(driver), credentialKey({ ...driver, tripId: tripB }));
+  assert.throws(() => verifiedSession({ tripId: tripA, role: 'consumer' }, 'driver'), /Driver/);
+  assert.throws(() => verifiedSession({ tripId: tripA, role: 'driver' }, 'consumer'), /Viewer/);
+  assert.throws(() => verifiedSession({ tripId: 'invalid', role: 'driver' }, 'driver'));
+});
+
+test('a driver can renew while offline but cannot abandon a queue or active capture session', () => {
+  const driver = verifiedSession({ tripId: tripA, role: 'driver' }, 'driver');
+  const otherTrip = { ...driver, tripId: tripB };
+  assert.doesNotThrow(() => assertDriverReplacement(driver, driver, 500, true));
+  assert.throws(() => assertDriverReplacement(driver, otherTrip, 1, false), /upload saved/);
+  assert.throws(() => assertDriverReplacement(driver, otherTrip, 0, true), /Stop the driver/);
+  assert.throws(() => assertDriverReplacement(driver, null, 1, false));
+  assert.throws(() => assertDriverReplacement(driver, null, 0, true));
+  assert.throws(() => assertDriverReplacement(null, otherTrip, 1, false));
+  assert.doesNotThrow(() => assertDriverReplacement(driver, otherTrip, 0, false));
+  assert.doesNotThrow(() => assertDriverReplacement(driver, null, 0, false));
+});
 test('only an explicit commit acknowledgement for the exact batch permits deletion', () => {
   const sent = [{ clientPointId: 'a' }, { clientPointId: 'b' }] as LocationPayload[];
   assert.deepEqual(acceptedIds({ success: true, acceptedIds: ['b', 'a'] }, sent), ['b', 'a']);

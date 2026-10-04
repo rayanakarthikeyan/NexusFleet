@@ -27,7 +27,14 @@
       ],
       "expo-task-manager",
       "expo-sqlite",
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "@maplibre/maplibre-react-native"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "71fe53a2-02cc-4bb0-83d7-9b1d9be98374"
+      }
+    },
+    "owner": "rayanakarthikeyan"
   }
 }

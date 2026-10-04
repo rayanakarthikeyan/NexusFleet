@@ -1,6 +1,7 @@
-import * as SecureStore from 'expo-secure-store';
 import { io, Socket } from 'socket.io-client';
-import { LocationPayload } from '../types';
+import { LocationPayload, Session } from '../types';
+import { getSession } from './LocalDatabase';
+import { getTripCredential } from './CredentialStore';
 export { acceptedIds } from './acknowledgement';
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
 export function backendUrl() {
@@ -11,10 +12,13 @@ export function backendUrl() {
 }
 let socket: Socket | undefined;
 let socketToken: string | undefined;
-export async function credential() {
-  const token = await SecureStore.getItemAsync('trip-token');
-  if (!token) throw new Error('Set a trip credential first');
-  return token;
+export async function credential(explicitSession?: Session) {
+  // Background uploads always resolve the persisted DRIVER binding. A viewer
+  // supplies its own session explicitly and can never replace this credential.
+  const session = explicitSession ?? (await getSession());
+  if (!session || (!explicitSession && session.role !== 'driver'))
+    throw new Error('Sign in as Driver first');
+  return getTripCredential(session);
 }
 export function disconnectTransport() {
   socket?.disconnect();

@@ -1,10 +1,19 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, MapMarkerProps, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import {
+  Map as FleetMap,
+  Camera,
+  CameraRef,
+  Marker,
+  MarkerProps,
+  GeoJSONSource,
+  Layer,
+} from '@maplibre/maplibre-react-native';
 import Animated, {
   cancelAnimation,
   Easing,
   useAnimatedProps,
+  useAnimatedStyle,
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
@@ -31,14 +40,30 @@ export default function ConsumerMap({ session }: { session: Session }) {
   const longitude = useSharedValue(origin.longitude);
   const heading = useSharedValue(0);
   const completion = useSharedValue(0);
-  const map = useRef<MapView>(null);
+  const camera = useRef<CameraRef>(null);
+  const firstFix = useRef<[number, number] | null>(null);
   const [visible, setVisible] = useState(false);
   const [path, setPath] = useState<{ latitude: number; longitude: number }[]>([]);
   const [status, setStatus] = useState('Connecting…');
-  const animatedProps = useAnimatedProps<MapMarkerProps>(() => ({
-    coordinate: { latitude: latitude.value, longitude: normalizeLongitude(longitude.value) },
-    rotation: normalizeHeading(heading.value),
+  const animatedProps = useAnimatedProps<MarkerProps>(() => ({
+    // MapLibre expects longitude first. Marker exposes getAnimatableRef for
+    // Reanimated 4, so this prop reaches the Fabric view on the UI thread.
+    lngLat: [normalizeLongitude(longitude.value), latitude.value],
   }));
+  const markerStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${normalizeHeading(heading.value)}deg` }],
+  }));
+  const route = useMemo(
+    () => ({
+      type: 'Feature' as const,
+      properties: {},
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: path.map((point) => [point.longitude, point.latitude]),
+      },
+    }),
+    [path],
+  );
   useEffect(() => {
     let stopped = false,
       initialized = false,
@@ -51,6 +76,7 @@ export default function ConsumerMap({ session }: { session: Session }) {
     const playback: LocationFrame[] = [];
     let wake: (() => void) | undefined;
     let socket: ReturnType<typeof io> | undefined;
+    let viewerToken: string | undefined;
     const displayedPath: { latitude: number; longitude: number; timestamp: number }[] = [];
     let pathDirty = false;
     function appendPath(p: LocationFrame) {
@@ -93,10 +119,8 @@ export default function ConsumerMap({ session }: { session: Session }) {
         longitude.value = p.longitude;
         heading.value = targetHeading ?? 0;
         setVisible(true);
-        map.current?.animateCamera(
-          { center: { latitude: p.latitude, longitude: p.longitude }, zoom: 16 },
-          { duration: 0 },
-        );
+        firstFix.current = [p.longitude, p.latitude];
+        camera.current?.jumpTo({ center: firstFix.current, zoom: 16 });
       }
       const catchUp = playback.length > 0 || p.isOfflineCache;
       const duration = catchUp ? Math.max(30, Math.min(120, 2000 / (playback.length + 1))) : 1000;
@@ -146,7 +170,12 @@ export default function ConsumerMap({ session }: { session: Session }) {
               wake = resolve;
             });
           if (stopped) return;
-          const page = await api<HistoryPage>(`/telemetry/history?after=${cursor}`);
+          if (!viewerToken) return;
+          const page = await api<HistoryPage>(
+            `/telemetry/history?after=${cursor}`,
+            {},
+            viewerToken,
+          );
           if (stopped) return;
           receive(page.points);
           more = page.hasMore;
@@ -162,7 +191,8 @@ export default function ConsumerMap({ session }: { session: Session }) {
     }
     const connect = async () => {
       try {
-        const token = await credential();
+        const token = await credential(session);
+        viewerToken = token;
         if (stopped) return;
         socket = io(backendUrl(), { transports: ['websocket'], auth: { token }, timeout: 5000 });
         socket.on('location_frames', (batch: { points: LocationFrame[] }) => {
@@ -231,23 +261,47 @@ export default function ConsumerMap({ session }: { session: Session }) {
   }, [session.tripId, latitude, longitude, heading, completion]);
   return (
     <View style={styles.container}>
-      <MapView
-        ref={map}
+      <FleetMap
         style={StyleSheet.absoluteFill}
-        provider={PROVIDER_GOOGLE}
-        initialRegion={{ ...origin, latitudeDelta: 0.03, longitudeDelta: 0.03 }}
+        mapStyle={
+          process.env.EXPO_PUBLIC_MAP_STYLE_URL || 'https://tiles.openfreemap.org/styles/liberty'
+        }
+        touchRotate={false}
+        touchPitch={false}
+        onDidFinishLoadingStyle={() => {
+          if (firstFix.current) camera.current?.jumpTo({ center: firstFix.current, zoom: 16 });
+        }}
       >
-        <Polyline coordinates={path} strokeColor={colors.brand} strokeWidth={4} />
+        <Camera
+          ref={camera}
+          initialViewState={{ center: [origin.longitude, origin.latitude], zoom: 12 }}
+        />
+        {path.length > 1 && (
+          <GeoJSONSource id="trip-route" data={route}>
+            <Layer
+              id="trip-route-line"
+              type="line"
+              paint={{ 'line-color': colors.brand, 'line-width': 4 }}
+              layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+            />
+          </GeoJSONSource>
+        )}
         {visible && (
           <AnimatedMarker
-            coordinate={origin}
+            id="driver-position"
+            lngLat={[origin.longitude, origin.latitude]}
             animatedProps={animatedProps}
-            flat
-            anchor={{ x: 0.5, y: 0.5 }}
-            title="NexusFleet driver"
-          />
+            anchor="center"
+          >
+            <Animated.View
+              accessibilityLabel="Driver location"
+              style={[styles.marker, markerStyle]}
+            >
+              <View style={styles.arrow} />
+            </Animated.View>
+          </AnimatedMarker>
         )}
-      </MapView>
+      </FleetMap>
       <View style={styles.badge}>
         <Text style={styles.label}>TRIP {session.tripId.slice(0, 8).toUpperCase()}</Text>
         <Text style={styles.status}>{status}</Text>
@@ -274,4 +328,26 @@ const styles = StyleSheet.create({
   label: { fontSize: 10, letterSpacing: 1.2, fontWeight: '700', color: colors.muted },
   status: { fontSize: 18, fontWeight: '700', color: colors.ink },
   detail: { fontSize: 12, color: colors.muted },
+  marker: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.brand,
+    borderWidth: 3,
+    borderColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 5,
+  },
+  arrow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderBottomWidth: 14,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'white',
+    marginTop: -2,
+  },
 });

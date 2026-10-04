@@ -1115,9 +1115,8 @@ volumes:
 
 ```text
 EXPO_PUBLIC_API_URL=https://your-api.example.com
-GOOGLE_MAPS_API_KEY=your-android-restricted-google-maps-key
-# Set after initializing the real Expo project; this ID is not a secret.
-EAS_PROJECT_ID=
+# Optional public style override. No key is needed for the default OpenFreeMap style.
+EXPO_PUBLIC_MAP_STYLE_URL=https://tiles.openfreemap.org/styles/liberty
 ```
 
 ## mobile/App.tsx
@@ -1131,87 +1130,109 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
-import * as SecureStore from 'expo-secure-store';
-import * as Location from 'expo-location';
-import { Session } from './types';
-import {
-  getQueueCount,
-  getSession,
-  initializeDatabase,
-  saveSession,
-} from './services/LocalDatabase';
-import { api, disconnectTransport } from './services/Transport';
+import type { Session } from './types';
+import { getSetting, setSetting } from './services/LocalDatabase';
+import { loadAccounts, signIn, signOut } from './services/AccountManager';
+import type { TripRole } from './services/sessionPolicy';
+import { startSyncManager } from './services/SyncManager';
 import DriverScreen from './screens/DriverScreen';
 import ConsumerMap from './screens/ConsumerMap';
-import { LOCATION_TASK } from './services/LocationTask';
-import { startSyncManager } from './services/SyncManager';
+import TripSignIn from './screens/TripSignIn';
 import { colors } from './theme';
+
 export default function App() {
-  const [session, setSession] = useState<Session | null>(null);
-  const [tab, setTab] = useState<'driver' | 'consumer'>('driver');
-  const [token, setToken] = useState('');
-  const [busy, setBusy] = useState(true);
+  const [driver, setDriver] = useState<Session | null>(null);
+  const [viewer, setViewer] = useState<Session | null>(null);
+  const [role, setRole] = useState<TripRole>('driver');
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
-  const [editingCredential, setEditingCredential] = useState(false);
-  const [credentialRevision, setCredentialRevision] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const [driverRevision, setDriverRevision] = useState(0);
+  const [viewerRevision, setViewerRevision] = useState(0);
+  const session = role === 'driver' ? driver : viewer;
+
   useEffect(() => {
-    void initializeDatabase()
-      .then(getSession)
-      .then((saved) => {
-        setSession(saved);
-        if (saved?.role === 'consumer') setTab('consumer');
-      })
-      .catch((error) => setFailure(String(error)))
-      .finally(() => setBusy(false));
+    let mounted = true;
+    void (async () => {
+      try {
+        const accounts = await loadAccounts();
+        const rememberedRole = await getSetting('active-role');
+        if (!mounted) return;
+        setDriver(accounts.driver);
+        setViewer(accounts.viewer);
+        setRole(
+          rememberedRole === 'consumer' || (!accounts.driver && accounts.viewer)
+            ? 'consumer'
+            : 'driver',
+        );
+      } catch (error) {
+        if (mounted) setFailure(error instanceof Error ? error.message : String(error));
+      } finally {
+        if (mounted) setLoading(false);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
   }, []);
+
   useEffect(() => {
-    if (session?.role === 'driver') return startSyncManager();
-  }, [session?.tripId, session?.role, credentialRevision]);
-  async function configure() {
+    // The selected UI role never owns the background session. Viewer login,
+    // navigation and credential editing leave driver delivery running.
+    if (driver) return startSyncManager();
+  }, [driver?.tripId, driverRevision]);
+
+  function selectRole(next: TripRole) {
+    setRole(next);
+    setEditing(false);
+    void setSetting('active-role', next).catch((error) => Alert.alert('NexusFleet', String(error)));
+  }
+
+  async function configure(code: string) {
     setBusy(true);
     try {
-      const verified = await api<{ tripId: string; role: Session['role'] }>(
-        '/telemetry/session',
-        {},
-        token.trim(),
-      );
-      const old = await getSession();
-      const sameTrip = old?.tripId === verified.tripId && old.role === verified.role;
-      if (
-        !sameTrip &&
-        ((await getQueueCount()) > 0 ||
-          (await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK)))
-      ) {
-        throw new Error(
-          'Stop tracking and sync saved points before switching trips. You can renew the current trip credential.',
-        );
+      const next = await signIn(role, code);
+      if (role === 'driver') {
+        setDriver(next);
+        setDriverRevision((value) => value + 1);
+      } else {
+        setViewer(next);
+        setViewerRevision((value) => value + 1);
       }
-      const value: Session = {
-        ...verified,
-        simulateOffline: sameTrip ? old.simulateOffline : false,
-      };
-      // Validate first; a pasted credential for another trip must never replace
-      // the token used by a concurrent background upload of the active trip.
-      await SecureStore.setItemAsync('trip-token', token.trim());
-      await saveSession(value);
-      disconnectTransport();
-      setSession(value);
-      setToken('');
-      setEditingCredential(false);
-      setCredentialRevision((revision) => revision + 1);
-      setTab(value.role === 'driver' ? 'driver' : 'consumer');
+      setEditing(false);
     } catch (error) {
-      Alert.alert('Session failed', error instanceof Error ? error.message : String(error));
+      Alert.alert('Sign-in failed', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
   }
-  // Editing keeps the active session alive. Merely opening this form must not
-  // stop foreground retries while the native task keeps recording locations.
+
+  async function leaveRole() {
+    setBusy(true);
+    try {
+      await signOut(role);
+    } catch (error) {
+      Alert.alert(
+        'Sign-out needs attention',
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      // Refresh even if SecureStore cleanup failed after unbinding an account.
+      try {
+        const accounts = await loadAccounts();
+        setDriver(accounts.driver);
+        setViewer(accounts.viewer);
+      } catch (error) {
+        Alert.alert('Account refresh failed', String(error));
+      }
+      setBusy(false);
+    }
+  }
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.page}>
@@ -1220,106 +1241,80 @@ export default function App() {
             <Text style={styles.wordmark}>NexusFleet</Text>
             <Text style={styles.subtitle}>Every trip, connected.</Text>
           </View>
-          {session && !editingCredential && (
+          {session && !editing && (
             <Pressable
               accessibilityRole="button"
+              disabled={busy}
               hitSlop={12}
-              onPress={() => setEditingCredential(true)}
+              onPress={() => setEditing(true)}
             >
               <Text style={styles.link}>Trip access</Text>
             </Pressable>
           )}
         </View>
-        {failure ? (
-          <View style={styles.setup}>
-            <Text style={styles.title}>Couldn’t open local storage</Text>
-            <Text style={styles.error}>{failure}</Text>
+        {loading ? (
+          <View style={styles.loading}>
+            <ActivityIndicator size="large" color={colors.brand} />
+            <Text style={styles.description}>Opening saved accounts…</Text>
+          </View>
+        ) : failure ? (
+          <View style={styles.loading}>
+            <Text style={styles.error}>Couldn’t open local storage: {failure}</Text>
             <Text style={styles.description}>Close and reopen the app to retry.</Text>
           </View>
-        ) : !session || editingCredential ? (
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.setup}>
-            <Text style={styles.eyebrow}>
-              {session ? 'RENEW TRIP ACCESS' : 'READY FOR THE ROAD'}
-            </Text>
-            <Text style={styles.title}>
-              {session ? 'Reconnect to your trip.' : 'Keep moving.\nWe’ll keep the route.'}
-            </Text>
-            <Text style={styles.description}>
-              Locations stay on your device when coverage drops and upload when you reconnect.
-            </Text>
-            <View style={styles.card}>
-              <Text style={styles.label}>Trip access code</Text>
-              <Text style={styles.description}>
-                Paste the driver or viewer code supplied for your demo trip.
-              </Text>
-              <TextInput
-                value={token}
-                onChangeText={setToken}
-                placeholder="Paste your access code"
-                placeholderTextColor={colors.muted}
-                accessibilityLabel="Trip access code"
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                style={styles.input}
-              />
-              <Pressable
-                accessibilityRole="button"
-                disabled={busy || !token.trim()}
-                style={[styles.primary, (busy || !token.trim()) && styles.disabled]}
-                onPress={() => {
-                  void configure();
-                }}
-              >
-                {busy ? (
-                  <ActivityIndicator color="white" />
-                ) : (
-                  <Text style={styles.primaryText}>Connect to trip</Text>
-                )}
-              </Pressable>
-              {session && (
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={busy}
-                  style={styles.cancel}
-                  onPress={() => {
-                    setEditingCredential(false);
-                    setToken('');
-                  }}
-                >
-                  <Text style={styles.link}>Back to current trip</Text>
-                </Pressable>
-              )}
-            </View>
-            <Text style={styles.footnote}>
-              Your access code stays in this device’s secure storage.
-            </Text>
-          </ScrollView>
         ) : (
           <>
             <View style={styles.tabs}>
-              {(['driver', 'consumer'] as const)
-                .filter((value) => value !== 'driver' || session.role === 'driver')
-                .map((value) => (
-                  <Pressable
-                    key={value}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: tab === value }}
-                    style={[styles.tab, tab === value && styles.selectedTab]}
-                    onPress={() => setTab(value)}
-                  >
-                    <Text style={[styles.tabText, tab === value && styles.selectedTabText]}>
-                      {value === 'driver' ? 'Driver' : 'Live map'}
-                    </Text>
-                  </Pressable>
-                ))}
+              {(['driver', 'consumer'] as const).map((value) => (
+                <Pressable
+                  key={value}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: role === value, disabled: busy }}
+                  disabled={busy}
+                  style={[styles.tab, role === value && styles.selectedTab]}
+                  onPress={() => selectRole(value)}
+                >
+                  <Text style={[styles.tabText, role === value && styles.selectedTabText]}>
+                    {value === 'driver' ? 'Driver' : 'Viewer'}
+                  </Text>
+                </Pressable>
+              ))}
             </View>
-            {tab === 'driver' ? (
-              <ScrollView>
-                <DriverScreen />
-              </ScrollView>
+            {!session || editing ? (
+              <TripSignIn
+                key={role}
+                role={role}
+                session={session}
+                busy={busy}
+                onSubmit={configure}
+                onCancel={() => setEditing(false)}
+              />
             ) : (
-              <ConsumerMap key={`${session.tripId}:${credentialRevision}`} session={session} />
+              <>
+                <View style={styles.accountRow}>
+                  <Text style={styles.accountLabel}>
+                    {role === 'driver' ? 'Driver' : 'Viewer'} · Trip {session.tripId.slice(0, 8)}
+                  </Text>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: busy }}
+                    disabled={busy}
+                    hitSlop={10}
+                    onPress={() => {
+                      void leaveRole();
+                    }}
+                  >
+                    <Text style={styles.link}>{busy ? 'Working…' : 'Sign out'}</Text>
+                  </Pressable>
+                </View>
+                {role === 'driver' ? (
+                  <ScrollView>
+                    <DriverScreen />
+                  </ScrollView>
+                ) : (
+                  <ConsumerMap key={`${session.tripId}:${viewerRevision}`} session={session} />
+                )}
+              </>
             )}
           </>
         )}
@@ -1327,6 +1322,7 @@ export default function App() {
     </SafeAreaProvider>
   );
 }
+
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.background },
   header: {
@@ -1338,32 +1334,10 @@ const styles = StyleSheet.create({
   },
   wordmark: { fontSize: 22, fontWeight: '800', color: colors.ink },
   subtitle: { marginTop: 4, fontSize: 12, color: colors.muted },
-  setup: { padding: 24, paddingTop: 32, gap: 20 },
-  eyebrow: { fontSize: 11, letterSpacing: 1.5, fontWeight: '700', color: colors.brand },
-  title: { fontSize: 32, lineHeight: 40, fontWeight: '700', color: colors.ink },
-  description: { fontSize: 15, lineHeight: 23, color: colors.muted },
-  card: {
-    padding: 20,
-    gap: 16,
-    backgroundColor: colors.surface,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  label: { fontSize: 16, fontWeight: '700', color: colors.ink },
-  input: {
-    borderColor: colors.border,
-    borderWidth: 1,
-    borderRadius: 12,
-    padding: 16,
-    color: colors.ink,
-  },
-  primary: { backgroundColor: colors.brand, padding: 17, borderRadius: 12, alignItems: 'center' },
-  primaryText: { color: 'white', fontWeight: '700', fontSize: 16 },
-  disabled: { opacity: 0.5 },
-  cancel: { alignItems: 'center', padding: 8 },
-  link: { color: colors.brand, fontWeight: '600' },
-  footnote: { fontSize: 12, lineHeight: 18, color: colors.muted },
+  loading: { flex: 1, padding: 24, gap: 20, alignItems: 'center', justifyContent: 'center' },
+  link: { color: colors.brand, fontWeight: '600', fontSize: 13 },
+  description: { fontSize: 14, lineHeight: 23, color: colors.muted },
+  error: { color: colors.danger, lineHeight: 22 },
   tabs: {
     marginHorizontal: 24,
     marginBottom: 12,
@@ -1376,32 +1350,15 @@ const styles = StyleSheet.create({
   selectedTab: { backgroundColor: colors.surface },
   tabText: { color: colors.muted, fontWeight: '600' },
   selectedTabText: { color: colors.ink },
-  error: { color: colors.danger, lineHeight: 22 },
-});
-```
-
-## mobile/app.config.ts
-
-```typescript
-import type { ConfigContext, ExpoConfig } from 'expo/config';
-export default ({ config }: ConfigContext): ExpoConfig => ({
-  ...config,
-  name: 'NexusFleet',
-  slug: 'nexusfleet',
-  extra: {
-    ...config.extra,
-    eas: {
-      ...config.extra?.eas,
-      ...(process.env.EAS_PROJECT_ID ? { projectId: process.env.EAS_PROJECT_ID } : {}),
-    },
+  accountRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
   },
-  android: {
-    ...config.android,
-    config: {
-      ...config.android?.config,
-      googleMaps: { apiKey: process.env.GOOGLE_MAPS_API_KEY ?? '' },
-    },
-  },
+  accountLabel: { fontSize: 12, color: colors.muted },
 });
 ```
 
@@ -1437,8 +1394,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       ],
       "expo-task-manager",
       "expo-sqlite",
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "@maplibre/maplibre-react-native"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "71fe53a2-02cc-4bb0-83d7-9b1d9be98374"
+      }
+    },
+    "owner": "rayanakarthikeyan"
   }
 }
 ```
@@ -1465,8 +1429,10 @@ module.exports = function (api) {
       "android": { "buildType": "apk" }
     },
     "preview": {
+      "node": "22.23.3",
       "distribution": "internal",
       "environment": "preview",
+      "autoIncrement": true,
       "android": { "buildType": "apk" }
     },
     "production": {
@@ -1500,29 +1466,32 @@ registerRootComponent(App);
   "scripts": {
     "start": "expo start --dev-client",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/reliability.test.ts"
+    "test": "tsx --test test/reliability.test.ts test/build-config.test.mjs",
+    "build:check": "node scripts/check-build-config.mjs",
+    "eas-build-post-install": "node scripts/check-build-config.mjs"
   },
   "dependencies": {
+    "@maplibre/maplibre-react-native": "11.4.1",
+    "@react-native-community/netinfo": "11.4.1",
+    "@types/geojson": "7946.0.16",
     "expo": "~54.0.0",
+    "expo-crypto": "~15.0.7",
+    "expo-dev-client": "~6.0.0",
+    "expo-location": "~19.0.7",
+    "expo-secure-store": "~15.0.7",
+    "expo-sqlite": "~16.0.8",
+    "expo-task-manager": "~14.0.8",
     "react": "19.1.0",
     "react-native": "0.81.5",
-    "expo-location": "~19.0.7",
-    "expo-task-manager": "~14.0.8",
-    "expo-sqlite": "~16.0.8",
-    "expo-crypto": "~15.0.7",
-    "expo-secure-store": "~15.0.7",
-    "expo-dev-client": "~6.0.0",
-    "react-native-maps": "1.20.1",
     "react-native-reanimated": "~4.1.1",
-    "react-native-worklets": "0.5.1",
-    "@react-native-community/netinfo": "11.4.1",
     "react-native-safe-area-context": "~5.6.0",
+    "react-native-worklets": "0.5.1",
     "socket.io-client": "^4.8.1"
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
-    "typescript": "~5.9.2",
-    "tsx": "^4.20.0"
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.2"
   }
 }
 ```
@@ -1530,13 +1499,22 @@ registerRootComponent(App);
 ## mobile/screens/ConsumerMap.tsx
 
 ```tsx
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, StyleSheet, Text, View } from 'react-native';
-import MapView, { Marker, MapMarkerProps, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import {
+  Map as FleetMap,
+  Camera,
+  CameraRef,
+  Marker,
+  MarkerProps,
+  GeoJSONSource,
+  Layer,
+} from '@maplibre/maplibre-react-native';
 import Animated, {
   cancelAnimation,
   Easing,
   useAnimatedProps,
+  useAnimatedStyle,
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
@@ -1563,14 +1541,30 @@ export default function ConsumerMap({ session }: { session: Session }) {
   const longitude = useSharedValue(origin.longitude);
   const heading = useSharedValue(0);
   const completion = useSharedValue(0);
-  const map = useRef<MapView>(null);
+  const camera = useRef<CameraRef>(null);
+  const firstFix = useRef<[number, number] | null>(null);
   const [visible, setVisible] = useState(false);
   const [path, setPath] = useState<{ latitude: number; longitude: number }[]>([]);
   const [status, setStatus] = useState('Connecting…');
-  const animatedProps = useAnimatedProps<MapMarkerProps>(() => ({
-    coordinate: { latitude: latitude.value, longitude: normalizeLongitude(longitude.value) },
-    rotation: normalizeHeading(heading.value),
+  const animatedProps = useAnimatedProps<MarkerProps>(() => ({
+    // MapLibre expects longitude first. Marker exposes getAnimatableRef for
+    // Reanimated 4, so this prop reaches the Fabric view on the UI thread.
+    lngLat: [normalizeLongitude(longitude.value), latitude.value],
   }));
+  const markerStyle = useAnimatedStyle(() => ({
+    transform: [{ rotate: `${normalizeHeading(heading.value)}deg` }],
+  }));
+  const route = useMemo(
+    () => ({
+      type: 'Feature' as const,
+      properties: {},
+      geometry: {
+        type: 'LineString' as const,
+        coordinates: path.map((point) => [point.longitude, point.latitude]),
+      },
+    }),
+    [path],
+  );
   useEffect(() => {
     let stopped = false,
       initialized = false,
@@ -1583,6 +1577,7 @@ export default function ConsumerMap({ session }: { session: Session }) {
     const playback: LocationFrame[] = [];
     let wake: (() => void) | undefined;
     let socket: ReturnType<typeof io> | undefined;
+    let viewerToken: string | undefined;
     const displayedPath: { latitude: number; longitude: number; timestamp: number }[] = [];
     let pathDirty = false;
     function appendPath(p: LocationFrame) {
@@ -1625,10 +1620,8 @@ export default function ConsumerMap({ session }: { session: Session }) {
         longitude.value = p.longitude;
         heading.value = targetHeading ?? 0;
         setVisible(true);
-        map.current?.animateCamera(
-          { center: { latitude: p.latitude, longitude: p.longitude }, zoom: 16 },
-          { duration: 0 },
-        );
+        firstFix.current = [p.longitude, p.latitude];
+        camera.current?.jumpTo({ center: firstFix.current, zoom: 16 });
       }
       const catchUp = playback.length > 0 || p.isOfflineCache;
       const duration = catchUp ? Math.max(30, Math.min(120, 2000 / (playback.length + 1))) : 1000;
@@ -1678,7 +1671,12 @@ export default function ConsumerMap({ session }: { session: Session }) {
               wake = resolve;
             });
           if (stopped) return;
-          const page = await api<HistoryPage>(`/telemetry/history?after=${cursor}`);
+          if (!viewerToken) return;
+          const page = await api<HistoryPage>(
+            `/telemetry/history?after=${cursor}`,
+            {},
+            viewerToken,
+          );
           if (stopped) return;
           receive(page.points);
           more = page.hasMore;
@@ -1694,7 +1692,8 @@ export default function ConsumerMap({ session }: { session: Session }) {
     }
     const connect = async () => {
       try {
-        const token = await credential();
+        const token = await credential(session);
+        viewerToken = token;
         if (stopped) return;
         socket = io(backendUrl(), { transports: ['websocket'], auth: { token }, timeout: 5000 });
         socket.on('location_frames', (batch: { points: LocationFrame[] }) => {
@@ -1763,23 +1762,47 @@ export default function ConsumerMap({ session }: { session: Session }) {
   }, [session.tripId, latitude, longitude, heading, completion]);
   return (
     <View style={styles.container}>
-      <MapView
-        ref={map}
+      <FleetMap
         style={StyleSheet.absoluteFill}
-        provider={PROVIDER_GOOGLE}
-        initialRegion={{ ...origin, latitudeDelta: 0.03, longitudeDelta: 0.03 }}
+        mapStyle={
+          process.env.EXPO_PUBLIC_MAP_STYLE_URL || 'https://tiles.openfreemap.org/styles/liberty'
+        }
+        touchRotate={false}
+        touchPitch={false}
+        onDidFinishLoadingStyle={() => {
+          if (firstFix.current) camera.current?.jumpTo({ center: firstFix.current, zoom: 16 });
+        }}
       >
-        <Polyline coordinates={path} strokeColor={colors.brand} strokeWidth={4} />
+        <Camera
+          ref={camera}
+          initialViewState={{ center: [origin.longitude, origin.latitude], zoom: 12 }}
+        />
+        {path.length > 1 && (
+          <GeoJSONSource id="trip-route" data={route}>
+            <Layer
+              id="trip-route-line"
+              type="line"
+              paint={{ 'line-color': colors.brand, 'line-width': 4 }}
+              layout={{ 'line-cap': 'round', 'line-join': 'round' }}
+            />
+          </GeoJSONSource>
+        )}
         {visible && (
           <AnimatedMarker
-            coordinate={origin}
+            id="driver-position"
+            lngLat={[origin.longitude, origin.latitude]}
             animatedProps={animatedProps}
-            flat
-            anchor={{ x: 0.5, y: 0.5 }}
-            title="NexusFleet driver"
-          />
+            anchor="center"
+          >
+            <Animated.View
+              accessibilityLabel="Driver location"
+              style={[styles.marker, markerStyle]}
+            >
+              <View style={styles.arrow} />
+            </Animated.View>
+          </AnimatedMarker>
         )}
-      </MapView>
+      </FleetMap>
       <View style={styles.badge}>
         <Text style={styles.label}>TRIP {session.tripId.slice(0, 8).toUpperCase()}</Text>
         <Text style={styles.status}>{status}</Text>
@@ -1806,6 +1829,28 @@ const styles = StyleSheet.create({
   label: { fontSize: 10, letterSpacing: 1.2, fontWeight: '700', color: colors.muted },
   status: { fontSize: 18, fontWeight: '700', color: colors.ink },
   detail: { fontSize: 12, color: colors.muted },
+  marker: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: colors.brand,
+    borderWidth: 3,
+    borderColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 5,
+  },
+  arrow: {
+    width: 0,
+    height: 0,
+    borderLeftWidth: 6,
+    borderRightWidth: 6,
+    borderBottomWidth: 14,
+    borderLeftColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'white',
+    marginTop: -2,
+  },
 });
 ```
 
@@ -2052,6 +2097,300 @@ const styles = StyleSheet.create({
 });
 ```
 
+## mobile/screens/TripSignIn.tsx
+
+```tsx
+import { useState } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native';
+import type { Session } from '../types';
+import type { TripRole } from '../services/sessionPolicy';
+import { colors } from '../theme';
+
+interface Props {
+  role: TripRole;
+  session: Session | null;
+  busy: boolean;
+  onSubmit: (code: string) => Promise<void>;
+  onCancel: () => void;
+}
+
+export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: Props) {
+  const [code, setCode] = useState('');
+  const driver = role === 'driver';
+  const label = driver ? 'Driver' : 'Viewer';
+
+  return (
+    <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}>
+      <Text style={styles.eyebrow}>{label.toUpperCase()} SIGN-IN</Text>
+      <Text style={styles.title}>
+        {driver
+          ? 'Keep the route.\nEven without coverage.'
+          : 'Follow the trip.\nWatch the route catch up.'}
+      </Text>
+      <Text style={styles.description}>
+        {driver
+          ? 'Record locations in the background and upload saved points when the connection returns.'
+          : 'Watch committed locations on the map, including points uploaded after a network drop.'}
+      </Text>
+      <View style={styles.card}>
+        <Text style={styles.label}>{label} trip access code</Text>
+        <Text style={styles.description}>
+          {session
+            ? `Renew access to trip ${session.tripId.slice(0, 8)} or connect another trip.`
+            : `Paste the ${label.toLowerCase()} code supplied for your demo trip.`}
+        </Text>
+        <TextInput
+          value={code}
+          onChangeText={setCode}
+          editable={!busy}
+          placeholder={`Paste ${label.toLowerCase()} code`}
+          placeholderTextColor={colors.muted}
+          accessibilityLabel={`${label} trip access code`}
+          secureTextEntry
+          autoCapitalize="none"
+          autoCorrect={false}
+          style={styles.input}
+        />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{ disabled: busy || !code.trim() }}
+          disabled={busy || !code.trim()}
+          style={[styles.primary, (busy || !code.trim()) && styles.disabled]}
+          onPress={() => {
+            void onSubmit(code);
+          }}
+        >
+          {busy ? (
+            <ActivityIndicator color="white" />
+          ) : (
+            <Text style={styles.primaryText}>Sign in as {label}</Text>
+          )}
+        </Pressable>
+        {session && (
+          <Pressable
+            accessibilityRole="button"
+            disabled={busy}
+            style={styles.cancel}
+            onPress={onCancel}
+          >
+            <Text style={styles.link}>Back to current {label.toLowerCase()} trip</Text>
+          </Pressable>
+        )}
+      </View>
+      <Text style={styles.footnote}>
+        Driver and Viewer codes are stored separately in secure storage. Switching roles does not
+        stop an active driver trip.
+      </Text>
+    </ScrollView>
+  );
+}
+
+const styles = StyleSheet.create({
+  page: { padding: 24, paddingTop: 32, gap: 20 },
+  eyebrow: { fontSize: 11, letterSpacing: 1.5, fontWeight: '700', color: colors.brand },
+  title: { fontSize: 30, lineHeight: 39, fontWeight: '700', color: colors.ink },
+  description: { fontSize: 14, lineHeight: 23, color: colors.muted },
+  card: {
+    padding: 20,
+    gap: 16,
+    backgroundColor: colors.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  label: { fontSize: 16, fontWeight: '700', color: colors.ink },
+  input: {
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 16,
+    color: colors.ink,
+  },
+  primary: { backgroundColor: colors.brand, padding: 17, borderRadius: 12, alignItems: 'center' },
+  primaryText: { color: 'white', fontWeight: '700', fontSize: 16 },
+  disabled: { opacity: 0.5 },
+  cancel: { alignItems: 'center', padding: 8 },
+  link: { color: colors.brand, fontWeight: '600' },
+  footnote: { fontSize: 12, lineHeight: 19, color: colors.muted },
+});
+```
+
+## mobile/scripts/check-build-config.mjs
+
+```javascript
+import { existsSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+
+export function validateApkConfiguration(environment, appConfig) {
+  const errors = [];
+  let apiUrl;
+  try {
+    apiUrl = new URL(environment.EXPO_PUBLIC_API_URL ?? '');
+  } catch {
+    /* Report one useful error below. */
+  }
+  if (
+    !apiUrl ||
+    apiUrl.protocol !== 'https:' ||
+    apiUrl.username ||
+    apiUrl.password ||
+    apiUrl.pathname !== '/' ||
+    apiUrl.search ||
+    apiUrl.hash ||
+    apiUrl.hostname.endsWith('.example.com') ||
+    apiUrl.hostname.endsWith('.example')
+  ) {
+    errors.push(
+      'EXPO_PUBLIC_API_URL must be your deployed HTTPS API origin, without credentials, a path, or placeholder hostname.',
+    );
+  }
+  const projectId = appConfig.extra?.eas?.projectId;
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId ?? '')) {
+    errors.push('Initialize the real Expo project and configure extra.eas.projectId in app.json.');
+  }
+  return errors;
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const mobileDirectory = new URL('../', import.meta.url);
+  const localEnv = fileURLToPath(new URL('.env', mobileDirectory));
+  if (existsSync(localEnv)) process.loadEnvFile(localEnv);
+  const appConfig = JSON.parse(readFileSync(new URL('app.json', mobileDirectory), 'utf8')).expo;
+  const errors = validateApkConfiguration(process.env, appConfig);
+  if (errors.length) {
+    // Print names/instructions only. Keys and connection credentials never enter build logs.
+    console.error(errors.join('\n'));
+    process.exitCode = 1;
+  } else {
+    console.log('APK configuration is complete. Backend availability still needs verification.');
+  }
+}
+```
+
+## mobile/services/AccountManager.ts
+
+```typescript
+import * as Location from 'expo-location';
+import * as SecureStore from 'expo-secure-store';
+import type { Session } from '../types';
+import {
+  getQueueCount,
+  getSession,
+  getViewerSession,
+  initializeDatabase,
+  saveSession,
+  saveViewerSession,
+  setSetting,
+} from './LocalDatabase';
+import { api, disconnectTransport } from './Transport';
+import {
+  deleteTripCredential,
+  getSavedTripCredential,
+  saveTripCredential,
+} from './CredentialStore';
+import { LOCATION_TASK } from './LocationTask';
+import { SerialQueue } from './SerialQueue';
+import { assertDriverReplacement, TripRole, verifiedSession } from './sessionPolicy';
+
+const accountWrites = new SerialQueue();
+
+export async function loadAccounts() {
+  await initializeDatabase();
+  const legacy = await getSession();
+  const legacyToken = await SecureStore.getItemAsync('trip-token');
+  if (legacy && legacyToken) {
+    // Upgrade the single-login release without discarding its queue or token.
+    // Write the role/trip-bound credential before retiring the old key.
+    if (!(await getSavedTripCredential(legacy))) await saveTripCredential(legacy, legacyToken);
+    if (legacy.role === 'consumer') {
+      await saveViewerSession(legacy);
+      await setSetting('session', '');
+    }
+    await SecureStore.deleteItemAsync('trip-token');
+  }
+  const [driver, viewer] = await Promise.all([getSession(), getViewerSession()]);
+  return { driver: driver?.role === 'driver' ? driver : null, viewer };
+}
+
+export function signIn(role: TripRole, accessCode: string): Promise<Session> {
+  return accountWrites.run(async () => {
+    const code = accessCode.trim();
+    if (!code) throw new Error('Enter a trip access code');
+    const next = verifiedSession(await api<unknown>('/telemetry/session', {}, code), role);
+    const old = role === 'driver' ? await getSession() : await getViewerSession();
+    if (role === 'driver') {
+      assertDriverReplacement(
+        old,
+        next,
+        await getQueueCount(),
+        await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK),
+      );
+      next.simulateOffline = old?.tripId === next.tripId ? old.simulateOffline : false;
+    }
+    // A new trip uses a different SecureStore key. If the metadata write fails,
+    // the previously bound trip still resolves to its own credential.
+    await saveTripCredential(next, code);
+    if (role === 'driver') {
+      await saveSession(next);
+      disconnectTransport();
+    } else {
+      await saveViewerSession(next);
+    }
+    return next;
+  });
+}
+
+export function signOut(role: TripRole): Promise<void> {
+  return accountWrites.run(async () => {
+    const old = role === 'driver' ? await getSession() : await getViewerSession();
+    if (role === 'driver') {
+      assertDriverReplacement(
+        old,
+        null,
+        await getQueueCount(),
+        await Location.hasStartedLocationUpdatesAsync(LOCATION_TASK),
+      );
+    }
+    await setSetting(role === 'driver' ? 'session' : 'viewer-session', '');
+    if (role === 'driver') disconnectTransport();
+    if (old) await deleteTripCredential(old);
+  });
+}
+```
+
+## mobile/services/CredentialStore.ts
+
+```typescript
+import * as SecureStore from 'expo-secure-store';
+import type { Session } from '../types';
+import { credentialKey } from './sessionPolicy';
+
+export async function getTripCredential(session: Session): Promise<string> {
+  const token = await getSavedTripCredential(session);
+  if (!token)
+    throw new Error(`Sign in as ${session.role === 'driver' ? 'Driver' : 'Viewer'} first`);
+  return token;
+}
+
+export const getSavedTripCredential = (session: Session) =>
+  SecureStore.getItemAsync(credentialKey(session));
+
+export const saveTripCredential = (session: Session, token: string) =>
+  SecureStore.setItemAsync(credentialKey(session), token);
+
+export const deleteTripCredential = (session: Session) =>
+  SecureStore.deleteItemAsync(credentialKey(session));
+```
+
 ## mobile/services/LocalDatabase.ts
 
 ```typescript
@@ -2205,6 +2544,14 @@ export async function getSession(): Promise<Session | null> {
   return raw ? (JSON.parse(raw) as Session) : null;
 }
 export const saveSession = (session: Session) => setSetting('session', JSON.stringify(session));
+
+export async function getViewerSession(): Promise<Session | null> {
+  const raw = await getSetting('viewer-session');
+  return raw ? (JSON.parse(raw) as Session) : null;
+}
+
+export const saveViewerSession = (session: Session) =>
+  setSetting('viewer-session', JSON.stringify(session));
 ```
 
 ## mobile/services/LocationTask.ts
@@ -2437,9 +2784,10 @@ export function startSyncManager() {
 ## mobile/services/Transport.ts
 
 ```typescript
-import * as SecureStore from 'expo-secure-store';
 import { io, Socket } from 'socket.io-client';
-import { LocationPayload } from '../types';
+import { LocationPayload, Session } from '../types';
+import { getSession } from './LocalDatabase';
+import { getTripCredential } from './CredentialStore';
 export { acceptedIds } from './acknowledgement';
 export const API_URL = (process.env.EXPO_PUBLIC_API_URL ?? '').replace(/\/$/, '');
 export function backendUrl() {
@@ -2450,10 +2798,13 @@ export function backendUrl() {
 }
 let socket: Socket | undefined;
 let socketToken: string | undefined;
-export async function credential() {
-  const token = await SecureStore.getItemAsync('trip-token');
-  if (!token) throw new Error('Set a trip credential first');
-  return token;
+export async function credential(explicitSession?: Session) {
+  // Background uploads always resolve the persisted DRIVER binding. A viewer
+  // supplies its own session explicitly and can never replace this credential.
+  const session = explicitSession ?? (await getSession());
+  if (!session || (!explicitSession && session.role !== 'driver'))
+    throw new Error('Sign in as Driver first');
+  return getTripCredential(session);
 }
 export function disconnectTransport() {
   socket?.disconnect();
@@ -2582,6 +2933,84 @@ export function bearing(lat1: number, lng1: number, lat2: number, lng2: number):
 }
 ```
 
+## mobile/services/sessionPolicy.ts
+
+```typescript
+import type { Session } from '../types';
+
+export type TripRole = Session['role'];
+
+export function credentialKey(session: Pick<Session, 'tripId' | 'role'>): string {
+  return `nexusfleet.${session.role}.${session.tripId}`;
+}
+
+export function verifiedSession(value: unknown, expectedRole: TripRole): Session {
+  const candidate = value as Partial<Session> | null;
+  if (
+    !candidate ||
+    typeof candidate.tripId !== 'string' ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      candidate.tripId,
+    ) ||
+    candidate.role !== expectedRole
+  ) {
+    throw new Error(
+      `Use a ${expectedRole === 'driver' ? 'Driver' : 'Viewer'} trip access code for this sign-in.`,
+    );
+  }
+  return { tripId: candidate.tripId, role: expectedRole, simulateOffline: false };
+}
+
+export function assertDriverReplacement(
+  current: Session | null,
+  next: Session | null,
+  queueCount: number,
+  nativeTracking: boolean,
+) {
+  if (current?.tripId === next?.tripId && current && next) return;
+  if (queueCount > 0 || nativeTracking) {
+    throw new Error(
+      'Stop the driver trip and upload saved locations before changing or signing out of the driver account. Viewer sign-in is still available.',
+    );
+  }
+}
+```
+
+## mobile/test/build-config.test.mjs
+
+```javascript
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { validateApkConfiguration } from '../scripts/check-build-config.mjs';
+
+const projectId = '1d00a589-8bf5-44e1-b158-f53fc5b5b063';
+const environment = {
+  EXPO_PUBLIC_API_URL: 'https://fleet-demo.onrender.com',
+};
+
+test('APK preflight rejects placeholders and accidental credentials in the API URL', () => {
+  for (const url of [
+    '',
+    'http://fleet-demo.onrender.com',
+    'https://your-api.example.com',
+    'https://user:password@fleet-demo.onrender.com',
+    'https://fleet-demo.onrender.com/telemetry',
+  ]) {
+    assert.ok(
+      validateApkConfiguration(
+        { ...environment, EXPO_PUBLIC_API_URL: url },
+        { extra: { eas: { projectId } } },
+      ).some((error) => error.startsWith('EXPO_PUBLIC_API_URL')),
+    );
+  }
+  assert.equal(validateApkConfiguration({}, {}).length, 2);
+});
+
+test('APK preflight accepts a project binding from app.json without any Maps key', () => {
+  assert.deepEqual(validateApkConfiguration(environment, { extra: { eas: { projectId } } }), []);
+});
+```
+
 ## mobile/test/reliability.test.ts
 
 ```typescript
@@ -2596,6 +3025,33 @@ import {
 } from '../services/interpolation';
 import { acceptedIds } from '../services/acknowledgement';
 import { LocationPayload } from '../types';
+import { credentialKey, verifiedSession, assertDriverReplacement } from '../services/sessionPolicy';
+
+const tripA = '1d00a589-8bf5-44e1-b158-f53fc5b5b063';
+const tripB = 'db7d63f8-df61-431b-9484-a26f49db31f0';
+
+test('driver and viewer credentials remain isolated even on the same trip', () => {
+  const driver = verifiedSession({ tripId: tripA, role: 'driver' }, 'driver');
+  const viewer = verifiedSession({ tripId: tripA, role: 'consumer' }, 'consumer');
+  assert.notEqual(credentialKey(driver), credentialKey(viewer));
+  assert.notEqual(credentialKey(driver), credentialKey({ ...driver, tripId: tripB }));
+  assert.throws(() => verifiedSession({ tripId: tripA, role: 'consumer' }, 'driver'), /Driver/);
+  assert.throws(() => verifiedSession({ tripId: tripA, role: 'driver' }, 'consumer'), /Viewer/);
+  assert.throws(() => verifiedSession({ tripId: 'invalid', role: 'driver' }, 'driver'));
+});
+
+test('a driver can renew while offline but cannot abandon a queue or active capture session', () => {
+  const driver = verifiedSession({ tripId: tripA, role: 'driver' }, 'driver');
+  const otherTrip = { ...driver, tripId: tripB };
+  assert.doesNotThrow(() => assertDriverReplacement(driver, driver, 500, true));
+  assert.throws(() => assertDriverReplacement(driver, otherTrip, 1, false), /upload saved/);
+  assert.throws(() => assertDriverReplacement(driver, otherTrip, 0, true), /Stop the driver/);
+  assert.throws(() => assertDriverReplacement(driver, null, 1, false));
+  assert.throws(() => assertDriverReplacement(driver, null, 0, true));
+  assert.throws(() => assertDriverReplacement(null, otherTrip, 1, false));
+  assert.doesNotThrow(() => assertDriverReplacement(driver, otherTrip, 0, false));
+  assert.doesNotThrow(() => assertDriverReplacement(driver, null, 0, false));
+});
 test('only an explicit commit acknowledgement for the exact batch permits deletion', () => {
   const sent = [{ clientPointId: 'a' }, { clientPointId: 'b' }] as LocationPayload[];
   assert.deepEqual(acceptedIds({ success: true, acceptedIds: ['b', 'a'] }, sent), ['b', 'a']);
@@ -2729,7 +3185,7 @@ export interface Session {
     "docs:source": "node scripts/source-guide.mjs"
   },
   "engines": {
-    "node": ">=20.19.4"
+    "node": ">=22.0.0"
   },
   "devDependencies": {
     "prettier": "3.6.2"
@@ -2854,6 +3310,7 @@ const sources = [
   'mobile/services/SerialQueue.ts',
   'mobile/services/interpolation.ts',
   'mobile/services/acknowledgement.ts',
+  'mobile/services/sessionPolicy.ts',
   'mobile/test/reliability.test.ts',
 ];
 for (const path of sources) {

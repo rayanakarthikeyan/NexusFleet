@@ -2,7 +2,7 @@
 
 ## Dependency audit — 4 October 2026
 
-The locked dependency graph reports 38 npm advisories: 28 high and 10 moderate. The backend-only audit with `--omit=dev` reports four high findings in Prisma, `@prisma/config`, `deepmerge-ts` and `effect`; npm retains the CLI through Prisma Client’s optional peer relationship. The full graph also reports Expo-related dependencies including `braces`, `node-forge`, `postcss`, `image-size` and `uuid`.
+The locked dependency graph reports 35 npm advisories: 25 high and 10 moderate. The backend-only audit with `--omit=dev` reports four high findings in Prisma, `@prisma/config`, `deepmerge-ts` and `effect`; npm retains the CLI through Prisma Client’s optional peer relationship. The full graph also reports Expo-related dependencies including `braces`, `node-forge`, `postcss`, `image-size` and `uuid`.
 
 These counts are not a reachability assessment. The reported issues have not all been resolved. A safe-range update made no changes; `npm audit fix` proposed a Prisma downgrade and failed dependency resolution. Do not force a downgrade or override major versions just to make the audit output green.
 
@@ -22,7 +22,7 @@ npm outdated
 - Record the API URL, APK version and supported handset/Android version.
 - Renew the demo trip codes if the seven-day expiry falls during the presentation.
 - Check provider quotas and wake the Render service before the session.
-- Keep the Maps key restricted to the Android package and signing certificate.
+- Check that OpenFreeMap loads on the target network and map attribution remains visible.
 
 ## Before adding gateway replicas
 

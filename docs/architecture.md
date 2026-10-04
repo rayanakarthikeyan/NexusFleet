@@ -52,7 +52,7 @@ Network I/O occurs outside SQLite transactions, so GPS inserts can continue whil
 
 ## Map interpolation mathematics
 
-The marker coordinate is a native animated prop from `useAnimatedProps`; React state carries only status and historical polyline data. `latitude`, unwrapped `longitude`, and unwrapped `heading` are `useSharedValue` values. `withTiming` uses linear easing and a normal live duration of 1000 milliseconds:
+MapLibre renders the OpenFreeMap Liberty style without an API key, with attribution enabled. Its marker takes a native `lngLat` animated prop (longitude first) from `useAnimatedProps`; React state carries only status and historical polyline data. `latitude`, unwrapped `longitude`, and unwrapped `heading` are `useSharedValue` values. `withTiming` uses linear easing and a normal live duration of 1000 milliseconds:
 
 ```text
 u(t) = clamp((t - t0) / duration, 0, 1)
@@ -62,7 +62,7 @@ longitude(t) = longitude0 + delta(longitude0, longitude1) * u(t)
 heading(t) = heading0 + delta(heading0, heading1) * u(t)
 ```
 
-Longitude is normalized to `[-180,180)` and heading to `[0,360)` only when feeding the native marker. Thus 179° to -179° crosses 2°, and heading 350° to 10° rotates 20°. Using raw endpoints would animate almost all the way around the earth or spin the vehicle backwards.
+Longitude is normalized to `[-180,180)` in `lngLat`. Heading is normalized to `[0,360)` in `useAnimatedStyle`, which rotates the marker's arrow. Map rotation and pitch gestures are disabled so the arrow stays aligned with true north. Thus 179° to -179° crosses 2°, and heading 350° to 10° rotates 20°. Using raw endpoints would animate almost all the way around the earth or spin the vehicle backwards.
 
 When GPS bearing is unknown, the previous and next coordinates supply a spherical initial bearing:
 

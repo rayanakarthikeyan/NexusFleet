@@ -1,6 +1,6 @@
 # Deploy the demo
 
-The stack stays the same: Expo/React Native, NestJS, Socket.IO, Prisma and PostgreSQL. Render hosts one gateway, Neon supplies PostgreSQL, and EAS builds the Android APK. Provider accounts and a Google Maps Android key are required. These instructions do not imply that a service or APK has already been published.
+The stack stays the same: Expo/React Native, NestJS, Socket.IO, Prisma and PostgreSQL. Render hosts one gateway, Neon supplies PostgreSQL, and EAS builds the Android APK. Provider accounts are required; the map uses MapLibre and OpenFreeMap without an API key. These instructions do not imply that a service or APK has already been published.
 
 ## 1. Create the Neon database
 
@@ -49,27 +49,13 @@ npm run provision --workspace backend -- --trip-id YOUR_EXISTING_TRIP_UUID
 
 Use **Trip access** in the app to enter the renewed code. Opening that form keeps the driver’s foreground sync manager running.
 
-## 4. Configure EAS and Google Maps
+## 4. Configure EAS and the free map
 
-In `mobile`, sign in to Expo and initialize the project:
+The project is linked in `mobile/app.json` to [NexusFleet on Expo](https://expo.dev/accounts/rayanakarthikeyan/projects/nexusfleet). A fork should initialize a separate Expo project from its `mobile` directory.
 
-```powershell
-Set-Location mobile
-npx eas-cli login
-npx eas-cli init
-```
+Set `EXPO_PUBLIC_API_URL` in the EAS **preview** environment to the actual Render HTTPS origin, without a path. Use plaintext visibility: this public address is bundled into the app. The preview build preflight rejects missing or placeholder configuration.
 
-For the dynamic app configuration, store the assigned UUID as `EAS_PROJECT_ID` in `mobile/.env` and in the EAS preview environment. Alternatively, put the non-secret project ID in `extra.eas.projectId` in `app.json`; the dynamic config preserves it. Do not use a made-up UUID.
-
-Set these variables in the EAS **preview** environment through the Expo dashboard or CLI:
-
-| Variable              | Value                                               | Visibility |
-| --------------------- | --------------------------------------------------- | ---------- |
-| `EAS_PROJECT_ID`      | Actual Expo project UUID                            | Plaintext  |
-| `EXPO_PUBLIC_API_URL` | Actual Render HTTPS origin, without a trailing path | Plaintext  |
-| `GOOGLE_MAPS_API_KEY` | Restricted Android Maps key                         | Sensitive  |
-
-Enable Maps SDK for Android. Restrict the key to `com.nexusfleet.app` and the SHA-1 of the EAS signing certificate, available through `npx eas-cli credentials --platform android`. Maps requires its own Google Cloud configuration and billing eligibility; a free EAS account does not supply a Maps key. Check [Google’s setup requirements](https://developers.google.com/maps/documentation/android-sdk/get-api-key) and [Expo’s map configuration](https://docs.expo.dev/versions/v54.0.0/sdk/map-view/).
+MapLibre Native uses the OpenFreeMap Liberty style by default. No map key, Google account or Google billing setup is needed. The Expo plugin installs the native renderer; it needs an APK or development build. Attribution remains enabled. Optionally set `EXPO_PUBLIC_MAP_STYLE_URL` to a compatible hosted style. Public tiles require connectivity; the SQLite telemetry queue still records fixes when the basemap cannot load. The app does not currently download offline basemap regions. See [OpenFreeMap](https://openfreemap.org/) and [MapLibre Expo setup](https://maplibre.org/maplibre-react-native/docs/setup/expo/).
 
 ## 5. Build and share the APK
 
@@ -91,5 +77,5 @@ Run the [two-device checklist](demo.md) before sharing the demo. Verify the real
 | Migration startup failure   | `DIRECT_URL` must be the unpooled Neon URL with TLS enabled                            |
 | Access code rejected        | Provisioning and Render must use the same `JWT_SECRET`; check code expiry              |
 | Queue stays nonzero         | Simulation switch, connectivity, access code expiry and backend health                 |
-| Blank Google map            | Maps SDK enabled, API key configured, package name and signing SHA-1 restrictions      |
+| Blank basemap               | Device connectivity, OpenFreeMap availability and the optional style URL               |
 | Capture stops in background | Precise/background permissions, native service notification and handset power settings |

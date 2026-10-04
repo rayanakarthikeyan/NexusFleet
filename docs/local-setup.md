@@ -2,7 +2,7 @@
 
 ## Local backend setup
 
-Use Node 20.19.4 or later and Docker with Compose, or an existing PostgreSQL installation. The checked-in lockfile pins the dependency graph. Commands below use PowerShell and start in the repository root.
+Use Node 22 or later and Docker with Compose, or an existing PostgreSQL installation. The checked-in lockfile pins the dependency graph. Commands below use PowerShell and start in the repository root.
 
 ```powershell
 npm ci
@@ -43,7 +43,7 @@ Copy-Item mobile/.env.example mobile/.env
 
 Set `EXPO_PUBLIC_API_URL` to a reachable HTTPS origin, such as `https://api.your-domain.example`. The Android phone's `localhost` is the phone, not the development computer. A preview release requires HTTPS. A development client can use an HTTP URL only if its Android network-security configuration permits cleartext; HTTPS works with the supplied configuration.
 
-Enable Google Maps SDK for Android and set `GOOGLE_MAPS_API_KEY`. Restrict the key to `com.nexusfleet.app` and the SHA-1 of the EAS signing certificate. The key is necessarily included in the native app, so Android application restrictions matter. `app.config.ts` reads it at build time; a literal `process.env...` string in JSON would not interpolate it. See [Expo Google Maps configuration](https://docs.expo.dev/versions/v54.0.0/sdk/map-view/).
+MapLibre Native renders the free OpenFreeMap Liberty style. No map API key or Google account is required. The MapLibre Expo plugin requires a native build; Expo Go cannot load it. Attribution stays enabled. Optionally set `EXPO_PUBLIC_MAP_STYLE_URL` to another compatible style. See [MapLibre Expo setup](https://maplibre.org/maplibre-react-native/docs/setup/expo/) and [OpenFreeMap](https://openfreemap.org/).
 
 Configure the Expo account and project from the mobile directory:
 
@@ -53,10 +53,9 @@ npx eas-cli login
 npx eas-cli build:configure
 npx eas-cli init
 npx eas-cli env:create --environment preview --name EXPO_PUBLIC_API_URL --value https://api.your-domain.example --visibility plaintext
-npx eas-cli env:create --environment preview --name GOOGLE_MAPS_API_KEY --value YOUR_RESTRICTED_MAPS_KEY --visibility sensitive
 npx eas-cli build --platform android --profile preview
 ```
 
-EAS initialization assigns the real project identifier. The dynamic config preserves `extra.eas.projectId` from `app.json` and also accepts an `EAS_PROJECT_ID` environment variable. Keep the supplied `preview.android.buildType` equal to `apk`. Download and install the artifact from the resulting EAS build page. See [the deployment runbook](deployment.md) for the Render/Neon setup and hosted build variables.
+EAS initialization assigns the real project identifier in `app.json`. This repository is linked to the owner's NexusFleet project. Forks should initialize their own project. Keep `preview.android.buildType` equal to `apk`. The build preflight rejects a missing or placeholder API URL before native compilation. Download the artifact from the resulting build page. See [the deployment runbook](deployment.md) for hosted configuration.
 
 For an interactive development build, use the `development` profile and then `npm run start -w mobile`. Background Android location needs a development or standalone build: Expo Go does not supply the foreground/background services. See [Expo background location requirements](https://docs.expo.dev/versions/v54.0.0/sdk/location/) and [EAS APK configuration](https://docs.expo.dev/build-reference/apk/).
