@@ -1,0 +1,9 @@
+**/node_modules
+**/.env
+**/.env.*
+**/dist
+.git
+.test-postgres
+.test-postgres.log
+mobile/android
+mobile/ios

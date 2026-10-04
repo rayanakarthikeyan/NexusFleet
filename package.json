@@ -1,0 +1,10 @@
+{
+  "name": "nexusfleet", "private": true, "version": "1.0.0",
+  "workspaces": ["backend", "mobile"],
+  "scripts": {
+    "build:backend": "npm run build -w backend",
+    "check:mobile": "npm run typecheck -w mobile",
+    "test": "npm test -w backend && npm test -w mobile"
+  },
+  "engines": { "node": ">=20.19.4" }
+}

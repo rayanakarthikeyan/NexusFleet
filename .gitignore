@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.expo/
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+coverage/
+.test-postgres/
+.test-postgres.log
+.verification/
+mobile/android/
+mobile/ios/
+mobile/.eas/
