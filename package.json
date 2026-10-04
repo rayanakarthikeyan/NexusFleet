@@ -1,10 +1,24 @@
 {
-  "name": "nexusfleet", "private": true, "version": "1.0.0",
-  "workspaces": ["backend", "mobile"],
+  "name": "nexusfleet",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "backend",
+    "mobile"
+  ],
   "scripts": {
     "build:backend": "npm run build -w backend",
     "check:mobile": "npm run typecheck -w mobile",
-    "test": "npm test -w backend && npm test -w mobile"
+    "test": "npm test -w backend && npm test -w mobile",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "docs:source": "node scripts/source-guide.mjs"
   },
-  "engines": { "node": ">=20.19.4" }
+  "engines": {
+    "node": ">=20.19.4"
+  },
+  "devDependencies": {
+    "prettier": "3.6.2"
+  },
+  "description": "Offline-first Android fleet telemetry with durable capture and idempotent delivery."
 }

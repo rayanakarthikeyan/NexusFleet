@@ -1,35 +1,41 @@
 generator client {
   provider = "prisma-client-js"
 }
+
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
+
 model Trip {
-  id           String           @id @default(uuid()) @db.Uuid
+  id           String            @id @default(uuid()) @db.Uuid
   driverId     String
-  createdAt    DateTime         @default(now())
-  nextSequence Int              @default(0)
+  createdAt    DateTime          @default(now())
+  nextSequence Int               @default(0)
   points       TelemetryPoint[]
   outbox       TelemetryOutbox[]
 }
+
 model TelemetryPoint {
-  tripId        String   @db.Uuid
-  clientPointId String   @db.Uuid
-  sequence      Int
-  latitude      Float
-  longitude     Float
-  heading       Float?
-  speed         Float?
-  timestamp     DateTime @db.Timestamptz(3)
+  tripId         String   @db.Uuid
+  clientPointId  String   @db.Uuid
+  sequence       Int
+  latitude       Float
+  longitude      Float
+  heading        Float?
+  speed          Float?
+  timestamp      DateTime @db.Timestamptz(3)
   isOfflineCache Boolean
-  receivedAt    DateTime @default(now())
-  trip          Trip     @relation(fields: [tripId], references: [id], onDelete: Restrict)
+  receivedAt     DateTime @default(now())
+  trip           Trip     @relation(fields: [tripId], references: [id], onDelete: Restrict)
+
   // A lost ACK can retry forever without inserting a second coordinate.
   @@id([tripId, clientPointId])
   @@unique([tripId, sequence])
   @@index([tripId, timestamp])
 }
+
 model TelemetryOutbox {
   id          Int       @id @default(autoincrement())
   tripId      String    @db.Uuid
@@ -37,5 +43,6 @@ model TelemetryOutbox {
   publishedAt DateTime?
   createdAt   DateTime  @default(now())
   trip        Trip      @relation(fields: [tripId], references: [id], onDelete: Restrict)
+
   @@index([publishedAt, id])
 }

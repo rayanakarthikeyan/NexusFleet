@@ -1,7 +1,11 @@
 {
   "expo": {
-    "name": "NexusFleet", "slug": "nexusfleet", "version": "1.0.0",
-    "orientation": "portrait", "scheme": "nexusfleet", "newArchEnabled": true,
+    "name": "NexusFleet",
+    "slug": "nexusfleet",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "nexusfleet",
+    "newArchEnabled": true,
     "android": {
       "package": "com.nexusfleet.app",
       "permissions": [
@@ -13,12 +17,17 @@
       ]
     },
     "plugins": [
-      ["expo-location", {
-        "isAndroidBackgroundLocationEnabled": true,
-        "isAndroidForegroundServiceEnabled": true,
-        "locationAlwaysAndWhenInUsePermission": "NexusFleet tracks your location during an active trip, including while the app is in the background."
-      }],
-      "expo-task-manager", "expo-sqlite", "expo-secure-store"
+      [
+        "expo-location",
+        {
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "locationAlwaysAndWhenInUsePermission": "NexusFleet tracks your location during an active trip, including while the app is in the background."
+        }
+      ],
+      "expo-task-manager",
+      "expo-sqlite",
+      "expo-secure-store"
     ]
   }
 }

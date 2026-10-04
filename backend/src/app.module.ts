@@ -8,7 +8,10 @@ import { TelemetryGateway } from './telemetry/telemetry.gateway';
 import { TelemetryService } from './telemetry/telemetry.service';
 import { HealthController } from './health.controller';
 @Module({
-  imports: [JwtModule.register({ secret: process.env.JWT_SECRET }), ThrottlerModule.forRoot([{ ttl: 60000, limit: 240 }])],
+  imports: [
+    JwtModule.register({ secret: process.env.JWT_SECRET }),
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 240 }]),
+  ],
   controllers: [TelemetryController, HealthController],
   providers: [PrismaService, AuthService, AuthGuard, TelemetryService, TelemetryGateway],
 })

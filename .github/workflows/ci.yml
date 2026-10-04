@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: nexusfleet_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexusfleet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://nexus:ci-only-password@localhost:5432/nexusfleet_test
+      DIRECT_URL: postgresql://nexus:ci-only-password@localhost:5432/nexusfleet_test
+      TEST_DATABASE_URL: postgresql://nexus:ci-only-password@localhost:5432/nexusfleet_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run db:migrate --workspace backend
+      - run: npm run check:mobile
+      - run: npm test
+      - name: Check generated source reference
+        run: |
+          npm run docs:source
+          git diff --exit-code -- IMPLEMENTATION.md

@@ -1,10 +1,17 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { Request } from 'express';
-export interface Principal { sub: string; tripId: string; role: 'driver' | 'consumer'; exp: number }
+export interface Principal {
+  sub: string;
+  tripId: string;
+  role: 'driver' | 'consumer';
+  exp: number;
+}
 export type AuthRequest = Request & { principal: Principal };
 export const jwtOptions = {
-  issuer: 'nexusfleet', audience: 'nexusfleet-mobile', algorithms: ['HS256' as const],
+  issuer: 'nexusfleet',
+  audience: 'nexusfleet-mobile',
+  algorithms: ['HS256' as const],
 };
 @Injectable()
 export class AuthService {
@@ -12,10 +19,17 @@ export class AuthService {
   async verify(token: string): Promise<Principal> {
     try {
       const claims = await this.jwt.verifyAsync<Principal>(token, jwtOptions);
-      if (!claims.sub || !/^[0-9a-f-]{36}$/i.test(claims.tripId) ||
-        !['driver', 'consumer'].includes(claims.role) || !Number.isFinite(claims.exp)) throw new Error();
+      if (
+        !claims.sub ||
+        !/^[0-9a-f-]{36}$/i.test(claims.tripId) ||
+        !['driver', 'consumer'].includes(claims.role) ||
+        !Number.isFinite(claims.exp)
+      )
+        throw new Error();
       return claims;
-    } catch { throw new UnauthorizedException('Invalid or expired trip credential'); }
+    } catch {
+      throw new UnauthorizedException('Invalid or expired trip credential');
+    }
   }
 }
 @Injectable()

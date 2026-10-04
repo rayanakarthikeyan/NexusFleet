@@ -14,12 +14,33 @@ async function main() {
       : await db.trip.create({ data: { driverId: randomUUID() } });
     const driverId = trip.driverId;
     const jwt = new JwtService({ secret: process.env.JWT_SECRET });
-    const issue = (sub: string, role: string) => jwt.sign({ sub, role, tripId: trip.id }, {
-      issuer: 'nexusfleet', audience: 'nexusfleet-mobile', expiresIn: '7d', algorithm: 'HS256',
-    });
+    const issue = (sub: string, role: string) =>
+      jwt.sign(
+        { sub, role, tripId: trip.id },
+        {
+          issuer: 'nexusfleet',
+          audience: 'nexusfleet-mobile',
+          expiresIn: '7d',
+          algorithm: 'HS256',
+        },
+      );
     // Manual provisioning for the portfolio demo; credentials never ship in an APK.
-    console.log(JSON.stringify({ tripId: trip.id, driverToken: issue(driverId, 'driver'),
-      consumerToken: issue(randomUUID(), 'consumer') }, null, 2));
-  } finally { await db.$disconnect(); }
+    console.log(
+      JSON.stringify(
+        {
+          tripId: trip.id,
+          driverToken: issue(driverId, 'driver'),
+          consumerToken: issue(randomUUID(), 'consumer'),
+        },
+        null,
+        2,
+      ),
+    );
+  } finally {
+    await db.$disconnect();
+  }
 }
-void main().catch(error => { console.error(error); process.exitCode = 1; });
+void main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

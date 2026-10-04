@@ -1,0 +1,28 @@
+# Keep the repository root as the build context: both workspaces share a lockfile.
+services:
+  - type: web
+    name: nexusfleet-api
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci --workspace backend --include=dev && npm run build:backend
+    # Free services have no pre-deploy hook. Startup fails if a migration fails.
+    startCommand: npm run start:deploy --workspace backend
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: '22'
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false
+      - key: DIRECT_URL
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+    buildFilter:
+      paths:
+        - backend/**
+        - package.json
+        - package-lock.json
+        - render.yaml
