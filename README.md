@@ -27,7 +27,9 @@ flowchart LR
 
 ## Try the demo
 
-Download the [standalone Android APK](https://expo.dev/artifacts/eas/aAnk1gV-ivbnHGLIvLE_Gms9LGlbmuh5Llcywy3_JeM.apk) (1.0.0, versionCode 2). It uses the hosted Render/Neon API and the free OpenFreeMap basemap; Metro and a map API key are not required. The [release](https://github.com/rayanakarthikeyan/NexusFleet/releases/tag/v1.0.0-demo) includes a SHA-256 checksum.
+The [1.0.1 phone build on EAS](https://expo.dev/accounts/rayanakarthikeyan/projects/nexusfleet/builds/d7fd3ab8-429a-490b-bf88-10011703cff6) includes Driver and Viewer email/password sign-ins. Download its APK after EAS reports a successful build. This smaller build targets ARM64 Android phones and uses the hosted Render/Neon API and the free OpenFreeMap basemap; Metro and a map API key are not required.
+
+The earlier [1.0.0 standalone APK](https://expo.dev/artifacts/eas/aAnk1gV-ivbnHGLIvLE_Gms9LGlbmuh5Llcywy3_JeM.apk) (versionCode 2) remains available with trip-code sign-in. Its [release](https://github.com/rayanakarthikeyan/NexusFleet/releases/tag/v1.0.0-demo) includes a SHA-256 checksum.
 
 1. Use the supplied demo Driver and Viewer (user) email/password accounts in version 1.0.1, or seed your own accounts using the [local setup guide](docs/local-setup.md). The older 1.0.0 APK uses trip access codes.
 2. Install the APK on two Android devices. Sign in as Driver on the tracking phone and Viewer on the second phone.

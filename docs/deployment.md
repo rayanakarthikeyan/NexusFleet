@@ -31,17 +31,27 @@ The endpoint checks PostgreSQL connectivity. Render supplies `PORT` and TLS. Nat
 
 Free services sleep after 15 minutes without inbound traffic and may take about a minute to wake. Open `/health` before a live presentation and allow the app to retry. A temporary timeout leaves the SQLite queue intact. Free services have no shell or pre-deploy command, which is why migrations run during startup. See [Render’s free-service limits](https://render.com/docs/free) and [Blueprint reference](https://render.com/docs/blueprint-spec).
 
-## 3. Provision a demo trip locally
+## 3. Seed the demo accounts
 
 On your computer, put the Neon URLs and the **same** Render `JWT_SECRET` in the ignored `backend/.env`. This file grants backend access; keep it private.
 
 ```powershell
 npm ci
 npm run build:backend
+npm run seed:demo --workspace backend
+```
+
+Before seeding, set `DEMO_DRIVER_PASSWORD` and `DEMO_VIEWER_PASSWORD` in `backend/.env` to separate passwords of 12–128 characters. The default sign-in identifiers are `driver@nexusfleet.example` and `user@nexusfleet.example`; these reserved example addresses do not receive email. The seed stores salted password hashes in Neon. Neither passwords nor database credentials belong in Render's public variables, GitHub or the APK.
+
+For an existing trip, set `DEMO_TRIP_ID` to its UUID before seeding. Repeating the seed preserves the trip and driver identity, so a pending queue can still sync. Sign in under the matching Driver or Viewer role; each successful login issues a token valid for seven days. See [local setup](local-setup.md) for account lifecycle details.
+
+Trip access codes remain available as a fallback:
+
+```powershell
 npm run provision --workspace backend
 ```
 
-The command creates a trip and prints driver and viewer codes valid for seven days. Share each code only with its intended demo device. To renew access without changing the trip or losing its pending queue:
+The command prints driver and viewer codes valid for seven days. Share each code only with its intended demo device. To renew access without changing the trip or losing its pending queue:
 
 ```powershell
 npm run provision --workspace backend -- --trip-id YOUR_EXISTING_TRIP_UUID
@@ -59,9 +69,17 @@ MapLibre Native uses the OpenFreeMap Liberty style by default. No map key, Googl
 
 ## 5. Build and share the APK
 
+The [1.0.1 phone build](https://expo.dev/accounts/rayanakarthikeyan/projects/nexusfleet/builds/d7fd3ab8-429a-490b-bf88-10011703cff6) was submitted from commit `8183cd9` on 5 October 2026, with Android versionCode 3. It adds email/password sign-in and compressed ARM64-only native libraries. Download the APK from that page once the build succeeds. It reuses the existing signing key; account passwords are excluded from the bundle.
+
 The first signed preview build is available as the [APK download](https://expo.dev/artifacts/eas/aAnk1gV-ivbnHGLIvLE_Gms9LGlbmuh5Llcywy3_JeM.apk) and on [EAS](https://expo.dev/accounts/rayanakarthikeyan/projects/nexusfleet/builds/7457eb8b-46df-436b-a6b5-ad28b49bc129). It is version 1.0.0 (Android versionCode 2), built from commit `c4fc3a7` on 4 October 2026. Access codes and backend secrets are excluded. Ten CI tests and hosted API/socket checks passed; physical-device validation remains required.
 
 From `mobile`:
+
+```powershell
+npx eas-cli build --platform android --profile phone
+```
+
+Use `phone` for the smaller ARM64 APK. For a universal APK that also supports ARM32 and x86 devices:
 
 ```powershell
 npx eas-cli build --platform android --profile preview
