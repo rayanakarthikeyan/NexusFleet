@@ -44,6 +44,12 @@ Latitude/longitude are degrees, heading is clockwise from true north, speed is m
 
 `live_location` accepts one identical object and acknowledges with the same response shape. `subscribe_trip` accepts `{ "trip_id": "<authorized UUID>" }`. The server publishes `location_frames` as `{ "points": [...] }`, adding `sequence` and `receivedAt` to each point. `GET /telemetry/history?after=0` returns up to 500 frames, `nextCursor`, and `hasMore`. `GET /telemetry/session` returns the authorized trip and role. `GET /health` checks database readiness.
 
+## Demo account authentication
+
+`POST /auth/login` accepts `{ email, password, role }`, where role is `driver` or `consumer` (Viewer). It normalizes email, validates bounded input, checks a salted scrypt hash, and requires the stored account role and trip ownership. A missing account performs the same password work. Wrong passwords, disabled accounts and role mismatches return the same 401 response. The route allows ten attempts per IP per minute on the single gateway.
+
+Passwords are provisioned by the operator seed CLI and never stored on the phone. Successful login returns a seven-day trip-scoped JWT and a `Cache-Control: no-store` response. Driver and Viewer store tokens under different role/trip SecureStore keys; viewer navigation cannot change the upload identity. Disabling an account prevents new sign-ins; already-issued tokens remain valid until expiry. Immediate session revocation and a renewal/reset flow remain production work.
+
 ## SQLite concurrency
 
 All queries share one serialized promise queue, including settings and reads. Capture batches use `BEGIN IMMEDIATE` and `COMMIT`; errors roll back the whole batch. WAL permits readers on other native connections, `synchronous=FULL` requests durable commits, and a busy timeout plus bounded retries handles short cross-runtime contention. A rejected operation does not poison later operations.

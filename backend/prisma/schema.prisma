@@ -15,6 +15,20 @@ model Trip {
   nextSequence Int               @default(0)
   points       TelemetryPoint[]
   outbox       TelemetryOutbox[]
+  accounts     DemoAccount[]
+}
+
+model DemoAccount {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  role         String
+  tripId       String   @db.Uuid
+  disabled     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  trip         Trip     @relation(fields: [tripId], references: [id], onDelete: Restrict)
+
+  @@index([tripId])
 }
 
 model TelemetryPoint {

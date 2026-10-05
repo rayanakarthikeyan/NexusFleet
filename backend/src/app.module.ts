@@ -7,12 +7,20 @@ import { TelemetryController } from './telemetry/telemetry.controller';
 import { TelemetryGateway } from './telemetry/telemetry.gateway';
 import { TelemetryService } from './telemetry/telemetry.service';
 import { HealthController } from './health.controller';
+import { AccountsController, AccountsService } from './accounts/accounts.controller';
 @Module({
   imports: [
     JwtModule.register({ secret: process.env.JWT_SECRET }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 240 }]),
   ],
-  controllers: [TelemetryController, HealthController],
-  providers: [PrismaService, AuthService, AuthGuard, TelemetryService, TelemetryGateway],
+  controllers: [TelemetryController, HealthController, AccountsController],
+  providers: [
+    PrismaService,
+    AuthService,
+    AuthGuard,
+    TelemetryService,
+    TelemetryGateway,
+    AccountsService,
+  ],
 })
 export class AppModule {}

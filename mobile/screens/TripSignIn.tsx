@@ -9,21 +9,25 @@ import {
   View,
 } from 'react-native';
 import type { Session } from '../types';
-import type { TripRole } from '../services/sessionPolicy';
+import type { TripRole, SignInInput } from '../services/sessionPolicy';
 import { colors } from '../theme';
 
 interface Props {
   role: TripRole;
   session: Session | null;
   busy: boolean;
-  onSubmit: (code: string) => Promise<void>;
+  onSubmit: (input: SignInInput) => Promise<void>;
   onCancel: () => void;
 }
 
 export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: Props) {
   const [code, setCode] = useState('');
+  const [useCode, setUseCode] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const driver = role === 'driver';
   const label = driver ? 'Driver' : 'Viewer';
+  const incomplete = useCode ? !code.trim() : !email.trim() || !password;
 
   return (
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}>
@@ -39,31 +43,66 @@ export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: 
           : 'Watch committed locations on the map, including points uploaded after a network drop.'}
       </Text>
       <View style={styles.card}>
-        <Text style={styles.label}>{label} trip access code</Text>
+        <Text style={styles.label}>
+          {label} {useCode ? 'trip access code' : 'account'}
+        </Text>
         <Text style={styles.description}>
           {session
             ? `Renew access to trip ${session.tripId.slice(0, 8)} or connect another trip.`
-            : `Paste the ${label.toLowerCase()} code supplied for your demo trip.`}
+            : useCode
+              ? `Paste the ${label.toLowerCase()} code supplied for your demo trip.`
+              : `Use the demo ${driver ? 'driver' : 'user'} email and password supplied to you.`}
         </Text>
-        <TextInput
-          value={code}
-          onChangeText={setCode}
-          editable={!busy}
-          placeholder={`Paste ${label.toLowerCase()} code`}
-          placeholderTextColor={colors.muted}
-          accessibilityLabel={`${label} trip access code`}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.input}
-        />
+        {useCode ? (
+          <TextInput
+            value={code}
+            onChangeText={setCode}
+            editable={!busy}
+            placeholder={`Paste ${label.toLowerCase()} code`}
+            placeholderTextColor={colors.muted}
+            accessibilityLabel={`${label} trip access code`}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+          />
+        ) : (
+          <>
+            <TextInput
+              value={email}
+              onChangeText={setEmail}
+              editable={!busy}
+              placeholder="Email address"
+              placeholderTextColor={colors.muted}
+              accessibilityLabel={`${label} email`}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              style={styles.input}
+            />
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              editable={!busy}
+              placeholder="Password"
+              placeholderTextColor={colors.muted}
+              accessibilityLabel={`${label} password`}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="current-password"
+              style={styles.input}
+            />
+          </>
+        )}
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ disabled: busy || !code.trim() }}
-          disabled={busy || !code.trim()}
-          style={[styles.primary, (busy || !code.trim()) && styles.disabled]}
+          accessibilityState={{ disabled: busy || incomplete }}
+          disabled={busy || incomplete}
+          style={[styles.primary, (busy || incomplete) && styles.disabled]}
           onPress={() => {
-            void onSubmit(code);
+            void onSubmit(useCode ? { code } : { email, password });
           }}
         >
           {busy ? (
@@ -71,6 +110,20 @@ export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: 
           ) : (
             <Text style={styles.primaryText}>Sign in as {label}</Text>
           )}
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={busy}
+          onPress={() => {
+            setUseCode(!useCode);
+            setPassword('');
+            setCode('');
+          }}
+          style={styles.cancel}
+        >
+          <Text style={styles.link}>
+            {useCode ? 'Use email and password' : 'Use a trip code instead'}
+          </Text>
         </Pressable>
         {session && (
           <Pressable
@@ -84,8 +137,8 @@ export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: 
         )}
       </View>
       <Text style={styles.footnote}>
-        Driver and Viewer codes are stored separately in secure storage. Switching roles does not
-        stop an active driver trip.
+        Driver and Viewer stay signed in separately. Switching roles keeps an active driver trip
+        running. The demo server may take a minute to wake on your first sign-in.
       </Text>
     </ScrollView>
   );

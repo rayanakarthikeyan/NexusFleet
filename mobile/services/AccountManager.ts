@@ -10,7 +10,7 @@ import {
   saveViewerSession,
   setSetting,
 } from './LocalDatabase';
-import { api, disconnectTransport } from './Transport';
+import { api, disconnectTransport, loginWithPassword } from './Transport';
 import {
   deleteTripCredential,
   getSavedTripCredential,
@@ -21,6 +21,17 @@ import { SerialQueue } from './SerialQueue';
 import { assertDriverReplacement, TripRole, verifiedSession } from './sessionPolicy';
 
 const accountWrites = new SerialQueue();
+
+export async function signInWithPassword(
+  role: TripRole,
+  email: string,
+  password: string,
+): Promise<Session> {
+  if (!email.trim() || !password) throw new Error('Enter your email and password.');
+  const token = await loginWithPassword(email, password, role);
+  // Only the scoped token is stored. The password never enters SQLite/SecureStore.
+  return signIn(role, token);
+}
 
 export async function loadAccounts() {
   await initializeDatabase();

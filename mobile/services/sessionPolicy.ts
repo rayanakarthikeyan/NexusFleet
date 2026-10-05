@@ -1,6 +1,7 @@
 import type { Session } from '../types';
 
 export type TripRole = Session['role'];
+export type SignInInput = { email: string; password: string } | { code: string };
 
 export function credentialKey(session: Pick<Session, 'tripId' | 'role'>): string {
   return `nexusfleet.${session.role}.${session.tripId}`;

@@ -151,6 +151,13 @@ DIRECT_URL=postgresql://nexus:replace-with-a-local-password@localhost:5432/nexus
 JWT_SECRET=replace-with-at-least-32-random-characters
 PORT=3000
 CORS_ORIGINS=https://your-viewer.example.com
+# Demo operator only: passwords are required for seed:demo; never bundle them.
+DEMO_DRIVER_EMAIL=driver@nexusfleet.example
+DEMO_VIEWER_EMAIL=user@nexusfleet.example
+DEMO_DRIVER_PASSWORD=
+DEMO_VIEWER_PASSWORD=
+# Optional existing trip UUID. Re-seeding otherwise preserves the account's trip.
+DEMO_TRIP_ID=
 ```
 
 ## backend/Dockerfile
@@ -195,7 +202,8 @@ CMD ["node", "backend/dist/src/main.js"]
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "provision": "tsx scripts/provision-demo.ts",
-    "test": "npm run build && tsx --test test/telemetry.integration.test.ts test/api.integration.test.ts"
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "test": "npm run build && tsx --test test/telemetry.integration.test.ts test/api.integration.test.ts test/accounts.integration.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",
@@ -255,6 +263,22 @@ CREATE TABLE "TelemetryOutbox" (
 CREATE INDEX "TelemetryOutbox_publishedAt_id_idx" ON "TelemetryOutbox"("publishedAt", "id");
 ```
 
+## backend/prisma/migrations/20261005000000_demo_accounts/migration.sql
+
+```sql
+CREATE TABLE "DemoAccount" (
+  "id" UUID PRIMARY KEY,
+  "email" TEXT NOT NULL,
+  "passwordHash" TEXT NOT NULL,
+  "role" TEXT NOT NULL CHECK ("role" IN ('driver', 'consumer')),
+  "tripId" UUID NOT NULL REFERENCES "Trip"("id") ON DELETE RESTRICT,
+  "disabled" BOOLEAN NOT NULL DEFAULT false,
+  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE UNIQUE INDEX "DemoAccount_email_key" ON "DemoAccount"("email");
+CREATE INDEX "DemoAccount_tripId_idx" ON "DemoAccount"("tripId");
+```
+
 ## backend/prisma/migrations/migration_lock.toml
 
 ```toml
@@ -281,6 +305,20 @@ model Trip {
   nextSequence Int               @default(0)
   points       TelemetryPoint[]
   outbox       TelemetryOutbox[]
+  accounts     DemoAccount[]
+}
+
+model DemoAccount {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  role         String
+  tripId       String   @db.Uuid
+  disabled     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  trip         Trip     @relation(fields: [tripId], references: [id], onDelete: Restrict)
+
+  @@index([tripId])
 }
 
 model TelemetryPoint {
@@ -365,6 +403,76 @@ void main().catch((error) => {
 });
 ```
 
+## backend/scripts/seed-demo.ts
+
+```typescript
+import 'dotenv/config';
+import { randomUUID } from 'node:crypto';
+import { PrismaClient } from '@prisma/client';
+import { hashPassword } from '../src/accounts/password';
+
+async function main() {
+  const driverEmail = (process.env.DEMO_DRIVER_EMAIL ?? 'driver@nexusfleet.example')
+    .trim()
+    .toLowerCase();
+  const viewerEmail = (process.env.DEMO_VIEWER_EMAIL ?? 'user@nexusfleet.example')
+    .trim()
+    .toLowerCase();
+  if (driverEmail === viewerEmail) throw new Error('Driver and Viewer need different emails');
+  const driverPassword = process.env.DEMO_DRIVER_PASSWORD;
+  const viewerPassword = process.env.DEMO_VIEWER_PASSWORD;
+  if (!driverPassword || !viewerPassword)
+    throw new Error('Set DEMO_DRIVER_PASSWORD and DEMO_VIEWER_PASSWORD in backend/.env');
+  const [driverHash, viewerHash] = await Promise.all([
+    hashPassword(driverPassword),
+    hashPassword(viewerPassword),
+  ]);
+  const db = new PrismaClient();
+  try {
+    const result = await db.$transaction(async (tx) => {
+      const existing = await tx.demoAccount.findUnique({ where: { email: driverEmail } });
+      const requested = process.env.DEMO_TRIP_ID;
+      if (existing && requested && existing.tripId !== requested)
+        throw new Error('Existing demo account belongs to another trip; refusing to rebind it');
+      const trip =
+        existing || requested
+          ? await tx.trip.findUniqueOrThrow({ where: { id: existing?.tripId ?? requested! } })
+          : await tx.trip.create({ data: { driverId: randomUUID() } });
+      if (existing && (existing.role !== 'driver' || existing.id !== trip.driverId))
+        throw new Error('Existing driver email conflicts with trip ownership');
+      const viewer = await tx.demoAccount.findUnique({ where: { email: viewerEmail } });
+      if (viewer && (viewer.role !== 'consumer' || viewer.tripId !== trip.id))
+        throw new Error('Existing viewer email belongs to another role or trip');
+      // Re-running seed renews hashes on the same trip; queued locations keep their identity.
+      await tx.demoAccount.upsert({
+        where: { email: driverEmail },
+        update: { passwordHash: driverHash, disabled: false },
+        create: {
+          id: trip.driverId,
+          email: driverEmail,
+          passwordHash: driverHash,
+          role: 'driver',
+          tripId: trip.id,
+        },
+      });
+      await tx.demoAccount.upsert({
+        where: { email: viewerEmail },
+        update: { passwordHash: viewerHash, disabled: false },
+        create: { email: viewerEmail, passwordHash: viewerHash, role: 'consumer', tripId: trip.id },
+      });
+      return { tripId: trip.id, driverEmail, viewerEmail };
+    });
+    console.log(JSON.stringify(result, null, 2));
+  } finally {
+    await db.$disconnect();
+  }
+}
+void main().catch((error) => {
+  console.error(error instanceof Error ? error.message : 'Demo seed failed');
+  process.exitCode = 1;
+});
+```
+
 ## backend/scripts/start-deploy.mjs
 
 ```javascript
@@ -394,6 +502,141 @@ execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'migra
 await import('../dist/src/main.js');
 ```
 
+## backend/src/accounts/accounts.controller.ts
+
+```typescript
+import {
+  Body,
+  Controller,
+  Header,
+  HttpCode,
+  Injectable,
+  Post,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { Transform } from 'class-transformer';
+import { IsEmail, IsIn, IsString, MaxLength, MinLength } from 'class-validator';
+import { PrismaService } from '../prisma.service';
+import { dummyPasswordHash, verifyPassword } from './password';
+
+class LoginDto {
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  @IsEmail()
+  @MaxLength(254)
+  email!: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(128)
+  password!: string;
+
+  @IsIn(['driver', 'consumer'])
+  role!: 'driver' | 'consumer';
+}
+
+@Injectable()
+export class AccountsService {
+  constructor(
+    private readonly db: PrismaService,
+    private readonly jwt: JwtService,
+  ) {}
+
+  async login(input: LoginDto) {
+    const account = await this.db.demoAccount.findUnique({
+      where: { email: input.email },
+      include: { trip: true },
+    });
+    const valid = await verifyPassword(input.password, account?.passwordHash ?? dummyPasswordHash);
+    if (
+      !account ||
+      !valid ||
+      account.disabled ||
+      account.role !== input.role ||
+      (account.role === 'driver' && account.id !== account.trip.driverId)
+    ) {
+      // Never reveal whether an email exists or which role owns it.
+      throw new UnauthorizedException('Email or password is incorrect for this role');
+    }
+    const expiresIn = 7 * 24 * 60 * 60;
+    const accessToken = this.jwt.sign(
+      { sub: account.id, role: account.role, tripId: account.tripId },
+      {
+        issuer: 'nexusfleet',
+        audience: 'nexusfleet-mobile',
+        algorithm: 'HS256',
+        expiresIn,
+      },
+    );
+    return { accessToken, expiresIn, tripId: account.tripId, role: input.role };
+  }
+}
+
+@Controller('auth')
+@UseGuards(ThrottlerGuard)
+export class AccountsController {
+  constructor(private readonly accounts: AccountsService) {}
+
+  @Post('login')
+  @HttpCode(200)
+  @Header('Cache-Control', 'no-store')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  login(@Body() input: LoginDto) {
+    return this.accounts.login(input);
+  }
+}
+```
+
+## backend/src/accounts/password.ts
+
+```typescript
+import { randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
+
+const keyLength = 32;
+const cost = 32768;
+
+function derive(password: string, salt: Buffer): Promise<Buffer> {
+  // Async scrypt keeps expensive password work off the HTTP event loop.
+  return new Promise((resolve, reject) =>
+    scrypt(
+      password,
+      salt,
+      keyLength,
+      { N: cost, r: 8, p: 3, maxmem: 64 * 1024 * 1024 },
+      (error, key) => (error ? reject(error) : resolve(key)),
+    ),
+  );
+}
+
+export async function hashPassword(password: string): Promise<string> {
+  if (password.length < 12 || password.length > 128)
+    throw new Error('Use a password of 12–128 characters');
+  const salt = randomBytes(16);
+  const key = await derive(password, salt);
+  return `scrypt-v1$${salt.toString('hex')}$${key.toString('hex')}`;
+}
+
+export async function verifyPassword(password: string, encoded: string): Promise<boolean> {
+  const [version, salt, key, extra] = encoded.split('$');
+  if (
+    version !== 'scrypt-v1' ||
+    !/^[0-9a-f]{32}$/.test(salt ?? '') ||
+    !/^[0-9a-f]{64}$/.test(key ?? '') ||
+    extra !== undefined
+  )
+    return false;
+  const actual = await derive(password, Buffer.from(salt, 'hex'));
+  return timingSafeEqual(actual, Buffer.from(key, 'hex'));
+}
+
+// Missing accounts perform the same password work to avoid an easy timing oracle.
+export const dummyPasswordHash = `scrypt-v1$${'0'.repeat(32)}$${'0'.repeat(64)}`;
+```
+
 ## backend/src/app.module.ts
 
 ```typescript
@@ -406,13 +649,21 @@ import { TelemetryController } from './telemetry/telemetry.controller';
 import { TelemetryGateway } from './telemetry/telemetry.gateway';
 import { TelemetryService } from './telemetry/telemetry.service';
 import { HealthController } from './health.controller';
+import { AccountsController, AccountsService } from './accounts/accounts.controller';
 @Module({
   imports: [
     JwtModule.register({ secret: process.env.JWT_SECRET }),
     ThrottlerModule.forRoot([{ ttl: 60000, limit: 240 }]),
   ],
-  controllers: [TelemetryController, HealthController],
-  providers: [PrismaService, AuthService, AuthGuard, TelemetryService, TelemetryGateway],
+  controllers: [TelemetryController, HealthController, AccountsController],
+  providers: [
+    PrismaService,
+    AuthService,
+    AuthGuard,
+    TelemetryService,
+    TelemetryGateway,
+    AccountsService,
+  ],
 })
 export class AppModule {}
 ```
@@ -827,6 +1078,113 @@ export class TelemetryService {
 }
 ```
 
+## backend/test/accounts.integration.test.ts
+
+```typescript
+import 'reflect-metadata';
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { NestFactory } from '@nestjs/core';
+import { ValidationPipe } from '@nestjs/common';
+import { PrismaClient } from '@prisma/client';
+import { JwtService } from '@nestjs/jwt';
+import { hashPassword } from '../src/accounts/password';
+
+test(
+  'password login enforces role, disabled accounts, ownership and input limits',
+  { skip: !process.env.TEST_DATABASE_URL },
+  async () => {
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+    process.env.JWT_SECRET = randomBytes(32).toString('hex');
+    const { AppModule } = await import('../dist/src/app.module.js');
+    const app = await NestFactory.create(AppModule, { logger: false });
+    app.useGlobalPipes(
+      new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }),
+    );
+    await app.listen(0, '127.0.0.1');
+    const db = new PrismaClient({ datasourceUrl: process.env.TEST_DATABASE_URL });
+    const trip = await db.trip.create({ data: { driverId: randomUUID() } });
+    const password = 'test-password-2026';
+    const email = `${randomUUID()}@nexusfleet.example`;
+    const viewerEmail = `${randomUUID()}@nexusfleet.example`;
+    const hash = await hashPassword(password);
+    assert.notEqual(hash, password);
+    assert.notEqual(hash, await hashPassword(password), 'Passwords must have unique salts');
+    await db.demoAccount.createMany({
+      data: [
+        { id: trip.driverId, email, passwordHash: hash, role: 'driver', tripId: trip.id },
+        {
+          id: randomUUID(),
+          email: viewerEmail,
+          passwordHash: hash,
+          role: 'consumer',
+          tripId: trip.id,
+        },
+      ],
+    });
+    const url = await app.getUrl();
+    const login = (body: unknown) =>
+      fetch(url + '/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    try {
+      const result = await login({ email: ` ${email.toUpperCase()} `, password, role: 'driver' });
+      assert.equal(result.status, 200);
+      assert.equal(result.headers.get('cache-control'), 'no-store');
+      const account = (await result.json()) as {
+        accessToken: string;
+        tripId: string;
+        role: string;
+      };
+      assert.equal(account.tripId, trip.id);
+      const claims = new JwtService({ secret: process.env.JWT_SECRET }).verify(
+        account.accessToken,
+        {
+          issuer: 'nexusfleet',
+          audience: 'nexusfleet-mobile',
+          algorithms: ['HS256'],
+        },
+      );
+      assert.equal(claims.sub, trip.driverId);
+      assert.equal(claims.role, 'driver');
+      assert.equal(
+        (
+          await fetch(url + '/telemetry/session', {
+            headers: { Authorization: 'Bearer ' + account.accessToken },
+          })
+        ).status,
+        200,
+      );
+      assert.equal((await login({ email: viewerEmail, password, role: 'consumer' })).status, 200);
+      for (const body of [
+        { email, password: 'wrong', role: 'driver' },
+        { email, password, role: 'consumer' },
+        { email: viewerEmail, password, role: 'driver' },
+        { email: 'missing@nexusfleet.example', password, role: 'driver' },
+      ])
+        assert.equal((await login(body)).status, 401);
+      assert.equal((await login({ email, password, role: 'admin' })).status, 400);
+      assert.equal((await login({ email, password: 'x'.repeat(129), role: 'driver' })).status, 400);
+      await db.demoAccount.update({ where: { email }, data: { disabled: true } });
+      assert.equal((await login({ email, password, role: 'driver' })).status, 401);
+      // A viewer cannot gain write access by having its stored role changed.
+      await db.demoAccount.update({ where: { email: viewerEmail }, data: { role: 'driver' } });
+      assert.equal((await login({ email: viewerEmail, password, role: 'driver' })).status, 401);
+      // The next request exceeds this route's ten-attempt limit.
+      assert.equal((await login({ email: viewerEmail, password, role: 'driver' })).status, 429);
+    } finally {
+      await app.close();
+      await db.demoAccount.deleteMany({ where: { tripId: trip.id } });
+      await db.trip.delete({ where: { id: trip.id } });
+      await db.$disconnect();
+    }
+  },
+);
+```
+
 ## backend/test/api.integration.test.ts
 
 ```typescript
@@ -1135,8 +1493,8 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import type { Session } from './types';
 import { getSetting, setSetting } from './services/LocalDatabase';
-import { loadAccounts, signIn, signOut } from './services/AccountManager';
-import type { TripRole } from './services/sessionPolicy';
+import { loadAccounts, signIn, signInWithPassword, signOut } from './services/AccountManager';
+import type { TripRole, SignInInput } from './services/sessionPolicy';
 import { startSyncManager } from './services/SyncManager';
 import DriverScreen from './screens/DriverScreen';
 import ConsumerMap from './screens/ConsumerMap';
@@ -1192,10 +1550,13 @@ export default function App() {
     void setSetting('active-role', next).catch((error) => Alert.alert('NexusFleet', String(error)));
   }
 
-  async function configure(code: string) {
+  async function configure(input: SignInInput) {
     setBusy(true);
     try {
-      const next = await signIn(role, code);
+      const next =
+        'code' in input
+          ? await signIn(role, input.code)
+          : await signInWithPassword(role, input.email, input.password);
       if (role === 'driver') {
         setDriver(next);
         setDriverRevision((value) => value + 1);
@@ -1362,6 +1723,33 @@ const styles = StyleSheet.create({
 });
 ```
 
+## mobile/app.config.js
+
+```javascript
+module.exports = ({ config }) => ({
+  ...config,
+  plugins: [
+    ...(config.plugins ?? []),
+    [
+      'expo-build-properties',
+      {
+        android: {
+          // The phone profile omits emulator/32-bit binaries to reduce download
+          // and installation space. Preview keeps all four architectures.
+          buildArchs:
+            process.env.NEXUSFLEET_ARM64_ONLY === '1'
+              ? ['arm64-v8a']
+              : ['armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'],
+          // Compress native libraries in the APK; Android extracts them during
+          // install. ELF page alignment is still checked on the downloaded APK.
+          useLegacyPackaging: true,
+        },
+      },
+    ],
+  ],
+});
+```
+
 ## mobile/app.json
 
 ```json
@@ -1369,7 +1757,7 @@ const styles = StyleSheet.create({
   "expo": {
     "name": "NexusFleet",
     "slug": "nexusfleet",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "scheme": "nexusfleet",
     "newArchEnabled": true,
@@ -1435,6 +1823,10 @@ module.exports = function (api) {
       "autoIncrement": true,
       "android": { "buildType": "apk" }
     },
+    "phone": {
+      "extends": "preview",
+      "env": { "NEXUSFLEET_ARM64_ONLY": "1" }
+    },
     "production": {
       "autoIncrement": true,
       "environment": "production",
@@ -1461,7 +1853,7 @@ registerRootComponent(App);
 {
   "name": "@nexusfleet/mobile",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "main": "index.ts",
   "scripts": {
     "start": "expo start --dev-client",
@@ -1475,6 +1867,7 @@ registerRootComponent(App);
     "@react-native-community/netinfo": "11.4.1",
     "@types/geojson": "7946.0.16",
     "expo": "~54.0.0",
+    "expo-build-properties": "~1.0.10",
     "expo-crypto": "~15.0.7",
     "expo-dev-client": "~6.0.0",
     "expo-location": "~19.0.7",
@@ -2111,21 +2504,25 @@ import {
   View,
 } from 'react-native';
 import type { Session } from '../types';
-import type { TripRole } from '../services/sessionPolicy';
+import type { TripRole, SignInInput } from '../services/sessionPolicy';
 import { colors } from '../theme';
 
 interface Props {
   role: TripRole;
   session: Session | null;
   busy: boolean;
-  onSubmit: (code: string) => Promise<void>;
+  onSubmit: (input: SignInInput) => Promise<void>;
   onCancel: () => void;
 }
 
 export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: Props) {
   const [code, setCode] = useState('');
+  const [useCode, setUseCode] = useState(false);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const driver = role === 'driver';
   const label = driver ? 'Driver' : 'Viewer';
+  const incomplete = useCode ? !code.trim() : !email.trim() || !password;
 
   return (
     <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.page}>
@@ -2141,31 +2538,66 @@ export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: 
           : 'Watch committed locations on the map, including points uploaded after a network drop.'}
       </Text>
       <View style={styles.card}>
-        <Text style={styles.label}>{label} trip access code</Text>
+        <Text style={styles.label}>
+          {label} {useCode ? 'trip access code' : 'account'}
+        </Text>
         <Text style={styles.description}>
           {session
             ? `Renew access to trip ${session.tripId.slice(0, 8)} or connect another trip.`
-            : `Paste the ${label.toLowerCase()} code supplied for your demo trip.`}
+            : useCode
+              ? `Paste the ${label.toLowerCase()} code supplied for your demo trip.`
+              : `Use the demo ${driver ? 'driver' : 'user'} email and password supplied to you.`}
         </Text>
-        <TextInput
-          value={code}
-          onChangeText={setCode}
-          editable={!busy}
-          placeholder={`Paste ${label.toLowerCase()} code`}
-          placeholderTextColor={colors.muted}
-          accessibilityLabel={`${label} trip access code`}
-          secureTextEntry
-          autoCapitalize="none"
-          autoCorrect={false}
-          style={styles.input}
-        />
+        {useCode ? (
+          <TextInput
+            value={code}
+            onChangeText={setCode}
+            editable={!busy}
+            placeholder={`Paste ${label.toLowerCase()} code`}
+            placeholderTextColor={colors.muted}
+            accessibilityLabel={`${label} trip access code`}
+            secureTextEntry
+            autoCapitalize="none"
+            autoCorrect={false}
+            style={styles.input}
+          />
+        ) : (
+          <>
+            <TextInput
+              value={email}
+              onChangeText={setEmail}
+              editable={!busy}
+              placeholder="Email address"
+              placeholderTextColor={colors.muted}
+              accessibilityLabel={`${label} email`}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="email"
+              style={styles.input}
+            />
+            <TextInput
+              value={password}
+              onChangeText={setPassword}
+              editable={!busy}
+              placeholder="Password"
+              placeholderTextColor={colors.muted}
+              accessibilityLabel={`${label} password`}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="current-password"
+              style={styles.input}
+            />
+          </>
+        )}
         <Pressable
           accessibilityRole="button"
-          accessibilityState={{ disabled: busy || !code.trim() }}
-          disabled={busy || !code.trim()}
-          style={[styles.primary, (busy || !code.trim()) && styles.disabled]}
+          accessibilityState={{ disabled: busy || incomplete }}
+          disabled={busy || incomplete}
+          style={[styles.primary, (busy || incomplete) && styles.disabled]}
           onPress={() => {
-            void onSubmit(code);
+            void onSubmit(useCode ? { code } : { email, password });
           }}
         >
           {busy ? (
@@ -2173,6 +2605,20 @@ export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: 
           ) : (
             <Text style={styles.primaryText}>Sign in as {label}</Text>
           )}
+        </Pressable>
+        <Pressable
+          accessibilityRole="button"
+          disabled={busy}
+          onPress={() => {
+            setUseCode(!useCode);
+            setPassword('');
+            setCode('');
+          }}
+          style={styles.cancel}
+        >
+          <Text style={styles.link}>
+            {useCode ? 'Use email and password' : 'Use a trip code instead'}
+          </Text>
         </Pressable>
         {session && (
           <Pressable
@@ -2186,8 +2632,8 @@ export default function TripSignIn({ role, session, busy, onSubmit, onCancel }: 
         )}
       </View>
       <Text style={styles.footnote}>
-        Driver and Viewer codes are stored separately in secure storage. Switching roles does not
-        stop an active driver trip.
+        Driver and Viewer stay signed in separately. Switching roles keeps an active driver trip
+        running. The demo server may take a minute to wake on your first sign-in.
       </Text>
     </ScrollView>
   );
@@ -2291,7 +2737,7 @@ import {
   saveViewerSession,
   setSetting,
 } from './LocalDatabase';
-import { api, disconnectTransport } from './Transport';
+import { api, disconnectTransport, loginWithPassword } from './Transport';
 import {
   deleteTripCredential,
   getSavedTripCredential,
@@ -2302,6 +2748,17 @@ import { SerialQueue } from './SerialQueue';
 import { assertDriverReplacement, TripRole, verifiedSession } from './sessionPolicy';
 
 const accountWrites = new SerialQueue();
+
+export async function signInWithPassword(
+  role: TripRole,
+  email: string,
+  password: string,
+): Promise<Session> {
+  if (!email.trim() || !password) throw new Error('Enter your email and password.');
+  const token = await loginWithPassword(email, password, role);
+  // Only the scoped token is stored. The password never enters SQLite/SecureStore.
+  return signIn(role, token);
+}
 
 export async function loadAccounts() {
   await initializeDatabase();
@@ -2884,6 +3341,41 @@ export async function api<T>(
     clearTimeout(timer);
   }
 }
+
+export async function loginWithPassword(
+  email: string,
+  password: string,
+  role: Session['role'],
+): Promise<string> {
+  const abort = new AbortController();
+  // A sleeping free demo server can take a minute to wake. This longer timeout
+  // applies only to interactive sign-in; background uploads stay bounded.
+  const timer = setTimeout(() => abort.abort(), 75000);
+  try {
+    const response = await fetch(`${backendUrl()}/auth/login`, {
+      method: 'POST',
+      signal: abort.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), password, role }),
+    });
+    if (!response.ok) {
+      if (response.status === 401) throw new Error('Email or password is incorrect for this role.');
+      if (response.status === 429)
+        throw new Error('Too many sign-in attempts. Wait a minute and retry.');
+      throw new Error(`Sign-in is unavailable (${response.status}). Try again shortly.`);
+    }
+    const result = (await response.json()) as { accessToken?: unknown };
+    if (typeof result.accessToken !== 'string' || !result.accessToken)
+      throw new Error('The server returned an invalid sign-in response.');
+    return result.accessToken;
+  } catch (error) {
+    if (abort.signal.aborted)
+      throw new Error('The demo server is taking longer to wake. Please retry.');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 ```
 
 ## mobile/services/acknowledgement.ts
@@ -2939,6 +3431,7 @@ export function bearing(lat1: number, lng1: number, lat2: number, lng2: number):
 import type { Session } from '../types';
 
 export type TripRole = Session['role'];
+export type SignInInput = { email: string; password: string } | { code: string };
 
 export function credentialKey(session: Pick<Session, 'tripId' | 'role'>): string {
   return `nexusfleet.${session.role}.${session.tripId}`;

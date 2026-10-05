@@ -11,8 +11,8 @@ import {
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import type { Session } from './types';
 import { getSetting, setSetting } from './services/LocalDatabase';
-import { loadAccounts, signIn, signOut } from './services/AccountManager';
-import type { TripRole } from './services/sessionPolicy';
+import { loadAccounts, signIn, signInWithPassword, signOut } from './services/AccountManager';
+import type { TripRole, SignInInput } from './services/sessionPolicy';
 import { startSyncManager } from './services/SyncManager';
 import DriverScreen from './screens/DriverScreen';
 import ConsumerMap from './screens/ConsumerMap';
@@ -68,10 +68,13 @@ export default function App() {
     void setSetting('active-role', next).catch((error) => Alert.alert('NexusFleet', String(error)));
   }
 
-  async function configure(code: string) {
+  async function configure(input: SignInInput) {
     setBusy(true);
     try {
-      const next = await signIn(role, code);
+      const next =
+        'code' in input
+          ? await signIn(role, input.code)
+          : await signInWithPassword(role, input.email, input.password);
       if (role === 'driver') {
         setDriver(next);
         setDriverRevision((value) => value + 1);

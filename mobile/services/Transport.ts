@@ -98,3 +98,38 @@ export async function api<T>(
     clearTimeout(timer);
   }
 }
+
+export async function loginWithPassword(
+  email: string,
+  password: string,
+  role: Session['role'],
+): Promise<string> {
+  const abort = new AbortController();
+  // A sleeping free demo server can take a minute to wake. This longer timeout
+  // applies only to interactive sign-in; background uploads stay bounded.
+  const timer = setTimeout(() => abort.abort(), 75000);
+  try {
+    const response = await fetch(`${backendUrl()}/auth/login`, {
+      method: 'POST',
+      signal: abort.signal,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim().toLowerCase(), password, role }),
+    });
+    if (!response.ok) {
+      if (response.status === 401) throw new Error('Email or password is incorrect for this role.');
+      if (response.status === 429)
+        throw new Error('Too many sign-in attempts. Wait a minute and retry.');
+      throw new Error(`Sign-in is unavailable (${response.status}). Try again shortly.`);
+    }
+    const result = (await response.json()) as { accessToken?: unknown };
+    if (typeof result.accessToken !== 'string' || !result.accessToken)
+      throw new Error('The server returned an invalid sign-in response.');
+    return result.accessToken;
+  } catch (error) {
+    if (abort.signal.aborted)
+      throw new Error('The demo server is taking longer to wake. Please retry.');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}

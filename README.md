@@ -29,8 +29,8 @@ flowchart LR
 
 Download the [standalone Android APK](https://expo.dev/artifacts/eas/aAnk1gV-ivbnHGLIvLE_Gms9LGlbmuh5Llcywy3_JeM.apk) (1.0.0, versionCode 2). It uses the hosted Render/Neon API and the free OpenFreeMap basemap; Metro and a map API key are not required. The [release](https://github.com/rayanakarthikeyan/NexusFleet/releases/tag/v1.0.0-demo) includes a SHA-256 checksum.
 
-1. Obtain the operator-issued Driver and Viewer codes, or start your own backend and provision a trip using the [local setup guide](docs/local-setup.md).
-2. Install the APK on two Android devices. Connect one with the driver code and the other with the viewer code.
+1. Use the supplied demo Driver and Viewer (user) email/password accounts in version 1.0.1, or seed your own accounts using the [local setup guide](docs/local-setup.md). The older 1.0.0 APK uses trip access codes.
+2. Install the APK on two Android devices. Sign in as Driver on the tracking phone and Viewer on the second phone.
 3. Start a trip, enable **Simulate Network Drop**, and move with the driver phone. Its queue count grows.
 4. Disable the switch. The queue drains after commit acknowledgements, and the viewer plays the saved route in catch-up mode.
 
@@ -54,7 +54,7 @@ npm run db:migrate --workspace backend
 npm run dev --workspace backend
 ```
 
-In another terminal, `npm run provision --workspace backend` creates a trip and prints its two access codes. The same APK has separate Driver and Viewer sign-ins, remembered independently. Mobile setup requires a reachable API URL; MapLibre renders OpenFreeMap tiles without an API key. See the [full setup](docs/local-setup.md).
+In another terminal, `npm run seed:demo --workspace backend` creates the two demo accounts after you set their passwords in `backend/.env`. `npm run provision --workspace backend` remains available for trip access codes. The same APK has separate Driver and Viewer sign-ins, remembered independently. See [Android installation troubleshooting](docs/android-install.md) if your phone rejects the download. Mobile setup requires a reachable API URL; MapLibre renders OpenFreeMap tiles without an API key. See the [full setup](docs/local-setup.md).
 
 ## What’s in the repo
 
@@ -94,7 +94,7 @@ Database tests require `TEST_DATABASE_URL` pointing to a separate, migrated test
 
 The deployment target remains **Render Free + Neon Free + EAS Free**. Follow [the deployment runbook](docs/deployment.md) for account setup, migrations and APK builds.
 
-This is a portfolio demo, with operator-issued trip credentials. A production rollout still needs an identity and renewal flow, retention rules, monitoring, and physical-device validation. Run one gateway instance; multiple replicas require a shared Socket.IO adapter and outbox leasing. Android force-stop, revoked permissions or erased app storage can interrupt capture or remove saved data.
+This is a portfolio demo, with operator-seeded email/password accounts and optional trip access codes. A production rollout still needs an identity and renewal flow, retention rules, monitoring, and physical-device validation. Run one gateway instance; multiple replicas require a shared Socket.IO adapter and outbox leasing. Android force-stop, revoked permissions or erased app storage can interrupt capture or remove saved data.
 
 The demo API is live at [nexusfleet-api.onrender.com](https://nexusfleet-api.onrender.com/health), backed by Neon Free. HTTPS ingestion, WebSocket delivery, duplicate retries and role access were verified against the hosted service. Native background tracking, SQLite behavior and marker animation still need testing on a physical Android device.
 

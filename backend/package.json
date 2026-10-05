@@ -10,7 +10,8 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
     "provision": "tsx scripts/provision-demo.ts",
-    "test": "npm run build && tsx --test test/telemetry.integration.test.ts test/api.integration.test.ts"
+    "seed:demo": "tsx scripts/seed-demo.ts",
+    "test": "npm run build && tsx --test test/telemetry.integration.test.ts test/api.integration.test.ts test/accounts.integration.test.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.1.0",
