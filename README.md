@@ -4,6 +4,8 @@
 
 An offline-first fleet tracking demo built with React Native, Expo, NestJS and PostgreSQL.
 
+[Engineering case study and verification guide](docs/ENGINEERING_CASE_STUDY.md): backend transactions, stable-ID retries, two-trip concurrent ingestion checks, and the limits of the mobile evidence.
+
 A driver can lose cellular coverage halfway through a trip. NexusFleet saves each GPS fix to SQLite before sending it, uploads the backlog when delivery resumes, and replays the route on a second device. The demo includes a **Simulate Network Drop** switch so this behavior can be shown without finding a dead zone.
 
 ## The failure case that matters
